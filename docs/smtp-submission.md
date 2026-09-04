@@ -11,7 +11,7 @@ BunMail runs (up to) two independent SMTP listeners. They are **not** the same t
 | | **Submission** (this module) | **Inbound** ([docs/inbound.md](inbound.md)) |
 |---|---|---|
 | Direction | Apps send **out** through BunMail | BunMail **receives** mail for your domains |
-| Default port | `587` | `25` (prod) / `2525` (dev) |
+| Default port | `465` (SMTPS, implicit TLS); `587` plaintext for trusted networks only | `25` (prod) / `2525` (dev) |
 | `AUTH` | **Required** (API key) | Disabled |
 | Recipient domains | **Any** (it's a relay for authenticated clients) | Only registered domains (open-relay guard) |
 | What it does | Parses the message → `createEmail` → outbound queue → DKIM → direct-to-MX | Parses → stores in `inbound_emails` (+ bounce/DMARC branching) |
@@ -26,8 +26,8 @@ Point the app's SMTP settings at BunMail:
 | Setting | Value |
 |---|---|
 | **Host** | your BunMail host (e.g. `mail.yourdomain.com`, or `localhost` on the same box) |
-| **Port** | `587` (or your `SMTP_SUBMISSION_PORT`) |
-| **Encryption** | STARTTLS if you configured a cert (below); otherwise none / plaintext |
+| **Port** | `465` (`SMTP_SUBMISSION_TLS_PORT`, SSL/TLS) — or `587` plaintext on a trusted private network |
+| **Encryption** | SSL/TLS (implicit) on 465. STARTTLS is **not** offered on 587: the socket upgrade `smtp-server` performs is not implemented by Bun. |
 | **Username** | anything — `apikey` is conventional (mirrors SendGrid) |
 | **Password** | a BunMail API key, `bm_live_…` |
 | **From** | an address on a domain **registered + DKIM-verified** in BunMail |
@@ -45,16 +45,17 @@ The submitted message is parsed and mapped to the same fields the REST send API 
 
 ### Not forwarded (v1 limitations)
 
-- **Attachments and arbitrary custom headers** are **not** relayed. The outbound pipeline (`createEmail` / `sendMail` / the `emails` schema) has no attachment or custom-header field yet, so the submission path relays `from/to/cc/bcc/subject/html/text` only. Fine for typical transactional mail (Infisical/Netbird/Dify invites, alerts, password resets); attachment support is a separate follow-up.
+- **Attachments and arbitrary custom headers** are **not** relayed for **API-key** sessions: the outbound pipeline rebuilds the message from `from/to/cc/bcc/subject/html/text`. Fine for typical transactional mail (Infisical/Netbird/Dify invites, alerts, password resets). **Mailbox** sessions (`user@domain` + mailbox password, see [docs/mailboxes.md](mailboxes.md)) are relayed faithfully instead — the original message is stored in `emails.raw_message` and sent as-is with DKIM, keeping attachments and threading headers.
 
 ## Configuration
 
 | Env Variable | Default | Description |
 |---|---|---|
 | `SMTP_SUBMISSION_ENABLED` | `false` | Start the submission server. |
-| `SMTP_SUBMISSION_PORT` | `587` | Listen port. |
+| `SMTP_SUBMISSION_PORT` | `587` | Plaintext listen port (AUTH only with `SMTP_SUBMISSION_ALLOW_INSECURE=true`). |
+| `SMTP_SUBMISSION_TLS_PORT` | `465` | Implicit-TLS (SMTPS) listen port, opened when a cert is configured. `0` disables. |
 | `SMTP_SUBMISSION_DAILY_QUOTA` | `0` | Per-API-key messages accepted per UTC day; over-quota → SMTP `452`. `0` = unlimited. See [Quotas](#per-key-daily-quotas-123). |
-| `SMTP_SUBMISSION_TLS_CERT` | _(empty)_ | PEM cert path. When set with the key, STARTTLS is advertised. |
+| `SMTP_SUBMISSION_TLS_CERT` | _(empty)_ | PEM cert path. When set with the key, the SMTPS listener is opened. |
 | `SMTP_SUBMISSION_TLS_KEY` | _(empty)_ | PEM private-key path. |
 | `SMTP_SUBMISSION_ALLOW_INSECURE` | `false` | Allow AUTH over plaintext (no TLS). The password is a full-privilege key, so this exposes it to link sniffers. With neither TLS nor this flag the server **refuses to start**. Set `true` only on a trusted network. |
 | `SMTP_SUBMISSION_RATE_LIMIT_ENABLED` | `true` | Per-IP connection rate limiting. |
@@ -66,7 +67,7 @@ The submitted message is parsed and mapped to the same fields the REST send API 
 
 ### TLS / security posture
 
-- **With a cert** (`SMTP_SUBMISSION_TLS_CERT` + `_KEY`): STARTTLS is advertised so clients can encrypt before sending the API key. This is the recommended posture whenever the port isn't strictly loopback.
+- **With a cert** (`SMTP_SUBMISSION_TLS_CERT` + `_KEY`): an implicit-TLS listener (SMTPS, `SMTP_SUBMISSION_TLS_PORT`, default 465) is opened so clients AUTH over TLS. This is the recommended posture whenever the port isn't strictly loopback. STARTTLS on 587 is not available under Bun (`smtp-server` upgrades sockets with `tls.TLSSocket`, which Bun doesn't implement) — the 587 listener never advertises it.
 - **Without a cert**: plaintext `AUTH` is **refused by default** (#133) — the server won't start, because the API key would travel in the clear. To run plaintext on a **trusted network** (app + BunMail sharing a host or a private Docker network), opt in explicitly with `SMTP_SUBMISSION_ALLOW_INSECURE=true`. Never expose a plaintext submission port to the public internet.
 - **Failed-AUTH throttle**: because the password is an API key, repeated failed AUTHs from one IP are counted and locked out (`454`) to blunt key brute-forcing. A successful AUTH clears the counter.
 
@@ -75,8 +76,8 @@ The submitted message is parsed and mapped to the same fields the REST send API 
 Submission is **off by default**. To enable it:
 
 1. **`.env`**: set `SMTP_SUBMISSION_ENABLED=true` (and, for TLS, the cert/key paths).
-2. **`docker-compose.yml`**: uncomment the submission port line under `services.app.ports` (commented out by default so a fresh checkout doesn't bind 587).
-3. **Firewall**: allow inbound TCP on 587 from the networks your apps live on.
+2. **`docker-compose.yml`**: port 465 is published by default (the acme sidecar provides the cert); 587 stays private unless you uncomment it for a trusted network.
+3. **Firewall**: allow inbound TCP on 465 from the networks your apps live on.
 
 Then `docker compose up -d --build`. When submission is off, the app logs `SMTP submission server disabled — set SMTP_SUBMISSION_ENABLED=true …` at startup.
 
@@ -98,8 +99,8 @@ MailerModule.forRootAsync({
   useFactory: (config: ConfigService) => ({
     transport: {
       host: config.get("EMAIL_HOST"),
-      port: 587,
-      secure: false, // STARTTLS if a cert is configured; plaintext otherwise
+      port: 465,
+      secure: true, // implicit TLS (SMTPS)
       auth: { user: config.get("EMAIL_USER"), pass: config.get("EMAIL_PASSWORD") },
     },
     defaults: { from: config.get("EMAIL_SENDER") },
@@ -113,11 +114,11 @@ These expose SMTP settings in their config/env. Set:
 
 ```
 SMTP host      = mail.yourdomain.com   (or the BunMail container hostname)
-SMTP port      = 587
+SMTP port      = 465
 SMTP username  = apikey
 SMTP password  = bm_live_...
 SMTP from      = notifications@yourdomain.com   (registered + DKIM-verified)
-TLS/STARTTLS   = on if you configured a cert, off on a trusted private network
+TLS            = SSL/TLS (implicit); use 587 without TLS only on a trusted private network
 ```
 
 ## Per-key daily quotas (#123)

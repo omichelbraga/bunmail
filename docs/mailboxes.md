@@ -195,6 +195,11 @@ lists and edits aliases per mailbox row.
 
 ## Limitations (v1)
 
+- Mailbox submissions are relayed **faithfully**: the client's RFC 822
+  message is stored in `emails.raw_message` and sent as-is (DKIM-signed), so
+  attachments, `In-Reply-To`/`References` and the client's `Message-ID` are
+  preserved and no `List-Unsubscribe` header is added. `html`/`text` are
+  still extracted for the dashboard. Messages are capped at 10 MB.
 - Sent mail from a client is not copied into the IMAP `Sent` folder by the
   server; mail clients do this themselves (all major ones do).
 - Sieve/filters, shared folders and webmail are out of scope.

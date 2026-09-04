@@ -363,6 +363,7 @@ async function processEmail(email: typeof emails.$inferSelect): Promise<void> {
       existingState,
       dkim,
       unsubscribe,
+      raw: email.rawMessage,
     });
 
     /**

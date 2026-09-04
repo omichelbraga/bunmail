@@ -36,6 +36,13 @@ export async function createEmail(
   /** Ingress channel (#137). REST callers use the default; the SMTP
    *  submission server passes `"smtp"`. */
   source: EmailSource = "api",
+  /**
+   * Faithful-relay options used by mailbox submissions (docs/mailboxes.md):
+   * the client's original RFC 822 message and its `Message-ID`. The queue
+   * sends `rawMessage` as-is (DKIM-signed) and reuses `messageId` so the
+   * client's identifier stays canonical across retries.
+   */
+  options: { rawMessage?: string; messageId?: string } = {},
 ): Promise<Email> {
   const id = generateId("msg");
   const senderDomain = input.from.split("@")[1];
@@ -161,6 +168,8 @@ export async function createEmail(
       html: htmlContent,
       textContent,
       source,
+      rawMessage: options.rawMessage ?? null,
+      messageId: options.messageId ?? null,
     })
     .returning();
 

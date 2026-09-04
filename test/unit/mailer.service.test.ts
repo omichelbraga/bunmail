@@ -506,3 +506,46 @@ describe("sendMail — stateful retry (#97)", () => {
     expect(second.deliveryState["<dns:nomx.test>"]!.status).toBe("failed");
   });
 });
+
+describe("sendMail — faithful raw relay (mailbox submissions)", () => {
+  test("sends the raw message as-is with DKIM and without synthetic headers", async () => {
+    const raw =
+      "From: mike@example.com\r\nTo: user@example.org\r\nMessage-ID: <c@client>\r\nIn-Reply-To: <o@x>\r\n\r\nbody\r\n";
+    await sendMail({
+      from: "mike@example.com",
+      to: "user@example.org",
+      subject: "ignored in raw mode",
+      html: "<p>ignored</p>",
+      messageId: "<c@client>",
+      raw,
+      dkim: { domainName: "example.com", keySelector: "bunmail", privateKey: "PEM" },
+    });
+    const opts = captured[0]!.mailOptions;
+    expect(opts.raw).toBe(raw);
+    expect(opts.headers).toBeUndefined();
+    expect(opts.html).toBeUndefined();
+    expect(opts.subject).toBeUndefined();
+    expect((opts.envelope as { from: string; to: string[] }).to).toEqual([
+      "user@example.org",
+    ]);
+    expect((opts.dkim as { domainName: string }).domainName).toBe("example.com");
+  });
+
+  test("still splits the raw relay per MX group with envelope overrides", async () => {
+    mxResolver = async (domain) => [{ exchange: `mx.${domain}`, priority: 10 }];
+    const raw =
+      "From: mike@example.com\r\nTo: a@one.test, b@two.test\r\nMessage-ID: <c@client>\r\n\r\nx\r\n";
+    await sendMail({
+      from: "mike@example.com",
+      to: "a@one.test, b@two.test",
+      subject: "s",
+      messageId: "<c@client>",
+      raw,
+    });
+    expect(captured).toHaveLength(2);
+    for (const c of captured) {
+      expect(c.mailOptions.raw).toBe(raw);
+      expect((c.mailOptions.envelope as { to: string[] }).to).toHaveLength(1);
+    }
+  });
+});

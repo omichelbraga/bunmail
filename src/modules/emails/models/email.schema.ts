@@ -101,6 +101,17 @@ export const emails = pgTable(
     textContent: text("text_content"),
 
     /**
+     * Original RFC 822 message as submitted by a mail client (mailbox
+     * SMTP submissions only, see docs/mailboxes.md). When present the
+     * mailer sends these exact bytes — DKIM-signed — instead of rebuilding
+     * the message from `html`/`text_content`, so attachments, threading
+     * headers (`In-Reply-To`, `References`) and the client's `Message-ID`
+     * survive. `html`/`text_content` are still filled for the dashboard.
+     * Null for API / app submissions (unchanged behaviour).
+     */
+    rawMessage: text("raw_message"),
+
+    /**
      * Current delivery status:
      * - queued:   waiting to be picked up by the queue processor
      * - sending:  currently being sent via SMTP

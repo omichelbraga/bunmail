@@ -122,3 +122,58 @@ export function buildSubmissionInput(parts: SubmissionMessageParts): SendEmailIn
     text: parts.text,
   };
 }
+
+/** Result of {@link prepareRawForRelay}. */
+export interface PreparedRawMessage {
+  /** Message ready to be relayed byte-for-byte (CRLF, no `Bcc:` header). */
+  raw: string;
+  /** The `Message-ID` the message carries after preparation. */
+  messageId: string;
+}
+
+/**
+ * Prepares a client-submitted RFC 822 message for faithful relay
+ * (mailbox submissions, docs/mailboxes.md):
+ *
+ * - **Drops any `Bcc:` header.** Mail clients strip it themselves, but a
+ *   misbehaving one must not leak blind recipients to everyone else; the
+ *   envelope recipients are tracked separately by the submission server.
+ * - **Ensures a `Message-ID`.** Clients set one; if it is missing, the
+ *   provided fallback is inserted so retries, bounces and the dashboard
+ *   have a stable identifier.
+ *
+ * Header folding (continuation lines starting with whitespace) is
+ * respected when removing `Bcc:`. Only the header block is touched.
+ */
+export function prepareRawForRelay(
+  raw: string,
+  fallbackMessageId: string,
+): PreparedRawMessage {
+  const separator = raw.indexOf("\r\n\r\n");
+  const headerBlock = separator === -1 ? raw : raw.slice(0, separator);
+  const body = separator === -1 ? "" : raw.slice(separator);
+
+  const lines = headerBlock.split("\r\n");
+  const kept: string[] = [];
+  let dropping = false;
+  let messageId: string | undefined;
+  for (const line of lines) {
+    const isContinuation = /^[ \t]/.test(line);
+    if (isContinuation) {
+      if (!dropping) kept.push(line);
+      continue;
+    }
+    dropping = /^bcc:/i.test(line);
+    if (dropping) continue;
+    const m = /^message-id:\s*(.+)$/i.exec(line);
+    if (m && m[1]) messageId = m[1].trim();
+    kept.push(line);
+  }
+
+  if (!messageId) {
+    messageId = fallbackMessageId;
+    kept.push(`Message-ID: ${messageId}`);
+  }
+
+  return { raw: kept.join("\r\n") + (body || "\r\n\r\n"), messageId };
+}

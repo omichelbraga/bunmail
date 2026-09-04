@@ -17,7 +17,8 @@ import { findByHash } from "../../api-keys/services/api-key.service.ts";
 import { createEmail } from "../../emails/services/email.service.ts";
 import { SuppressedRecipientError } from "../../suppressions/errors.ts";
 import type { SendEmailInput } from "../../emails/types/email.types.ts";
-import { buildSubmissionInput } from "../message-mapper.ts";
+import { buildSubmissionInput, prepareRawForRelay } from "../message-mapper.ts";
+import { randomBytes } from "crypto";
 import { recordOutcome, getAcceptedToday } from "./usage.service.ts";
 import {
   findMailboxByEmail,
@@ -542,8 +543,26 @@ export function start(portOverride?: number): void {
             return;
           }
 
+          /**
+           * Mailbox sessions relay the client's message faithfully
+           * (docs/mailboxes.md): attachments, threading headers and the
+           * client's Message-ID survive, and no bulk-mail headers are
+           * added. API-key sessions keep the rebuilt-message behaviour.
+           */
+          const relay = allowedFrom
+            ? prepareRawForRelay(
+                rawMessage,
+                `<${randomBytes(16).toString("hex")}@${config.mail.hostname}>`,
+              )
+            : null;
+
           /** Tag the row as SMTP-sourced so the dashboard can filter it (#137). */
-          const email = await createEmail(input, apiKeyId, "smtp");
+          const email = await createEmail(
+            input,
+            apiKeyId,
+            "smtp",
+            relay ? { rawMessage: relay.raw, messageId: relay.messageId } : {},
+          );
           await recordOutcome(apiKeyId, "accepted");
 
           logger.info("SMTP submission accepted — email queued", {

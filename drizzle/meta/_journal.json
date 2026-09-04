@@ -106,6 +106,13 @@
       "when": 1788507208509,
       "tag": "0014_mailbox_aliases",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1788509794077,
+      "tag": "0015_email_raw_message",
+      "breakpoints": true
     }
   ]
 }

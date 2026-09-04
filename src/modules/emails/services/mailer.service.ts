@@ -101,6 +101,13 @@ export async function sendMail(options: {
   existingState?: DeliveryState | null;
   dkim?: DkimOptions;
   unsubscribe?: UnsubscribeOptions;
+  /**
+   * Faithful relay (mailbox submissions): when set, these exact RFC 822
+   * bytes are sent — DKIM-signed — instead of a message rebuilt from
+   * subject/html/text. Headers (including `List-Unsubscribe`) are NOT
+   * added; the message must already carry its own `Message-ID`.
+   */
+  raw?: string | null;
 }): Promise<SendMailResult> {
   /** Build the starting state — either a fresh one from the inputs
    *  or a deep clone of the row's prior state. We always clone so the
@@ -150,6 +157,7 @@ export async function sendMail(options: {
         messageId: options.messageId,
         dkim: options.dkim,
         unsubscribe: options.unsubscribe,
+        raw: options.raw ?? null,
       });
       state[mxHost] = {
         ...group,
@@ -254,6 +262,7 @@ async function sendToMxGroup(args: {
   messageId: string;
   dkim?: DkimOptions;
   unsubscribe?: UnsubscribeOptions;
+  raw: string | null;
 }): Promise<void> {
   const transport = nodemailer.createTransport({
     host: args.mxHost,
@@ -266,28 +275,36 @@ async function sendToMxGroup(args: {
     },
   });
 
-  const mailOptions: Mail.Options = {
-    from: args.from,
-    /** Headers carry the *original* recipient lists so each recipient
-     *  sees who else was addressed. The actual RCPT TO list is the
-     *  envelope override below. */
-    to: args.headerTo,
-    cc: args.headerCc ?? undefined,
-    subject: args.subject,
-    html: args.html ?? undefined,
-    text: args.text ?? undefined,
-    messageId: args.messageId,
-    envelope: {
-      from: args.from,
-      to: args.recipients,
-    },
-  };
+  const envelope = { from: args.from, to: args.recipients };
+
+  /**
+   * Faithful relay: send the client's message as-is. Nodemailer ignores
+   * every other content field in `raw` mode, so no `List-Unsubscribe` or
+   * synthetic headers are added — a person-to-person message from a mail
+   * client keeps its threading headers, attachments and `Message-ID`.
+   * DKIM signing still applies to the raw stream.
+   */
+  const mailOptions: Mail.Options = args.raw
+    ? { raw: args.raw, envelope }
+    : {
+        from: args.from,
+        /** Headers carry the *original* recipient lists so each recipient
+         *  sees who else was addressed. The actual RCPT TO list is the
+         *  envelope override below. */
+        to: args.headerTo,
+        cc: args.headerCc ?? undefined,
+        subject: args.subject,
+        html: args.html ?? undefined,
+        text: args.text ?? undefined,
+        messageId: args.messageId,
+        envelope,
+      };
 
   /** `List-Unsubscribe` (+ optional `One-Click` POST). Same content
    *  across groups — the header is about the message, not the
-   *  recipient set. */
+   *  recipient set. Not applicable to raw relays (see above). */
   const senderDomain = args.from.split("@")[1];
-  if (senderDomain) {
+  if (senderDomain && !args.raw) {
     /**
      * Strip any CR/LF from the unsubscribe mailto/url before they go into a
      * header value (#133, header-injection defense-in-depth). These come

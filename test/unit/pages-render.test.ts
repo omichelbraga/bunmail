@@ -96,6 +96,7 @@ const email = {
   updatedAt: now,
   deletedAt: null,
   deliveryState: null,
+  rawMessage: null,
 };
 
 const inboundEmail = {

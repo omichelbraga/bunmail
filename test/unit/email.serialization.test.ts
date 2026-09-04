@@ -30,6 +30,7 @@ describe("serializeEmail", () => {
     updatedAt: new Date("2024-01-01"),
     deletedAt: null,
     deliveryState: null,
+    rawMessage: null,
   };
 
   test("maps fromAddress to from", () => {
