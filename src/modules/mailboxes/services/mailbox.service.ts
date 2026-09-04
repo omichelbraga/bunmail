@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "../../../db/index.ts";
 import { mailboxes } from "../models/mailbox.schema.ts";
+import { mailboxAliases } from "../models/mailbox-alias.schema.ts";
 import { apiKeys } from "../../api-keys/models/api-key.schema.ts";
 import { getDomainByName } from "../../domains/services/domain.service.ts";
 import { generateId } from "../../../utils/id.ts";
@@ -11,6 +12,7 @@ import { config } from "../../../config.ts";
 import { MailboxConflictError, MailboxValidationError } from "../errors.ts";
 import type {
   Mailbox,
+  MailboxAlias,
   CreateMailboxInput,
   UpdateMailboxInput,
   MailboxClientSettings,
@@ -210,11 +212,122 @@ export async function resolveDeliverableMailboxes(
     new Set(recipients.map((r) => r.trim().toLowerCase()).filter(Boolean)),
   );
   if (wanted.length === 0) return [];
+  const [direct, viaAlias] = await Promise.all([
+    db
+      .select({ email: mailboxes.email })
+      .from(mailboxes)
+      .where(and(inArray(mailboxes.email, wanted), eq(mailboxes.enabled, true))),
+    /** Aliases resolve to their target mailbox (only if that one is enabled). */
+    db
+      .select({ email: mailboxes.email })
+      .from(mailboxAliases)
+      .innerJoin(mailboxes, eq(mailboxAliases.mailboxId, mailboxes.id))
+      .where(and(inArray(mailboxAliases.email, wanted), eq(mailboxes.enabled, true))),
+  ]);
+  return Array.from(new Set([...direct, ...viaAlias].map((r) => r.email)));
+}
+
+/* ─── Aliases ─── */
+
+/** Lists the aliases of one mailbox, ordered by address. */
+export async function listAliases(mailboxId: string): Promise<MailboxAlias[]> {
+  return db
+    .select()
+    .from(mailboxAliases)
+    .where(eq(mailboxAliases.mailboxId, mailboxId))
+    .orderBy(asc(mailboxAliases.email));
+}
+
+/**
+ * Lists aliases for many mailboxes at once (dashboard / list API), keyed
+ * by mailbox id. Avoids one query per row.
+ */
+export async function listAliasesByMailbox(
+  mailboxIds: string[],
+): Promise<Map<string, MailboxAlias[]>> {
+  const out = new Map<string, MailboxAlias[]>();
+  if (mailboxIds.length === 0) return out;
   const rows = await db
-    .select({ email: mailboxes.email })
-    .from(mailboxes)
-    .where(and(inArray(mailboxes.email, wanted), eq(mailboxes.enabled, true)));
-  return rows.map((r) => r.email);
+    .select()
+    .from(mailboxAliases)
+    .where(inArray(mailboxAliases.mailboxId, mailboxIds))
+    .orderBy(asc(mailboxAliases.email));
+  for (const row of rows) {
+    const list = out.get(row.mailboxId) ?? [];
+    list.push(row);
+    out.set(row.mailboxId, list);
+  }
+  return out;
+}
+
+/**
+ * Adds an alias that delivers into `mailboxId`. The alias must be on a
+ * registered domain and must not collide with a mailbox or another alias.
+ *
+ * @throws MailboxValidationError on a bad address / unknown domain
+ * @throws MailboxConflictError when the address is already taken
+ */
+export async function createAlias(
+  mailboxId: string,
+  rawEmail: string,
+): Promise<MailboxAlias> {
+  const address = normalizeMailboxAddress(rawEmail);
+  if (!address) {
+    throw new MailboxValidationError(
+      "Enter a valid alias like support@yourdomain.com (letters, digits, . _ + - only)",
+    );
+  }
+  const mailbox = await getMailboxById(mailboxId);
+  if (!mailbox) throw new MailboxValidationError("Mailbox not found");
+
+  const domain = await getDomainByName(address.domainName);
+  if (!domain) {
+    throw new MailboxValidationError(
+      `Domain "${address.domainName}" is not registered in BunMail — add it under Domains first`,
+    );
+  }
+  if (await findMailboxByEmail(address.email))
+    throw new MailboxConflictError(address.email);
+  const [taken] = await db
+    .select({ id: mailboxAliases.id })
+    .from(mailboxAliases)
+    .where(eq(mailboxAliases.email, address.email))
+    .limit(1);
+  if (taken) throw new MailboxConflictError(address.email);
+
+  const id = generateId("mba");
+  logger.info("Creating mailbox alias", {
+    id,
+    mailboxId,
+    alias: redactEmail(address.email),
+  });
+  const [alias] = await db
+    .insert(mailboxAliases)
+    .values({ id, mailboxId, domainId: domain.id, email: address.email })
+    .returning();
+  return alias!;
+}
+
+/** Deletes an alias of `mailboxId`. Returns undefined when it doesn't exist. */
+export async function deleteAlias(
+  mailboxId: string,
+  aliasId: string,
+): Promise<MailboxAlias | undefined> {
+  const [row] = await db
+    .delete(mailboxAliases)
+    .where(and(eq(mailboxAliases.id, aliasId), eq(mailboxAliases.mailboxId, mailboxId)))
+    .returning();
+  if (row) logger.info("Mailbox alias deleted", { id: aliasId, mailboxId });
+  return row;
+}
+
+/**
+ * The set of addresses a mailbox login may use as `From` on the SMTP
+ * submission server: its own address plus its aliases (lower-cased).
+ */
+export async function getAllowedSenderAddresses(mailbox: Mailbox): Promise<Set<string>> {
+  const aliases = await listAliases(mailbox.id);
+  return new Set([mailbox.email, ...aliases.map((a) => a.email)]);
 }
 
 /**

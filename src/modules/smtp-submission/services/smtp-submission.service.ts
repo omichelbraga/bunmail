@@ -24,6 +24,7 @@ import {
   verifyMailboxPassword,
   getMailboxById,
   getMailboxSubmissionKeyId,
+  getAllowedSenderAddresses,
 } from "../../mailboxes/services/mailbox.service.ts";
 
 /**
@@ -453,7 +454,8 @@ export function start(portOverride?: number): void {
          * can't impersonate other identities on the domain.
          */
         let apiKeyId = sessionUser;
-        let enforcedFrom: string | null = null;
+        /** Addresses this session may send From (mailbox + aliases), or null for API keys. */
+        let allowedFrom: Set<string> | null = null;
         if (sessionUser.startsWith(MAILBOX_USER_PREFIX)) {
           const mailbox = await getMailboxById(
             sessionUser.slice(MAILBOX_USER_PREFIX.length),
@@ -463,7 +465,7 @@ export function start(portOverride?: number): void {
             callback(smtpError("Mailbox is disabled", 530));
             return;
           }
-          enforcedFrom = mailbox.email;
+          allowedFrom = await getAllowedSenderAddresses(mailbox);
           try {
             apiKeyId = await getMailboxSubmissionKeyId();
           } catch (error) {
@@ -522,13 +524,21 @@ export function start(portOverride?: number): void {
             text: typeof parsed.text === "string" ? parsed.text : undefined,
           });
 
-          if (enforcedFrom && input.from.trim().toLowerCase() !== enforcedFrom) {
-            logger.warn("SMTP submission rejected — From does not match mailbox", {
-              from: redactEmail(input.from),
-              mailbox: redactEmail(enforcedFrom),
-            });
+          if (allowedFrom && !allowedFrom.has(input.from.trim().toLowerCase())) {
+            logger.warn(
+              "SMTP submission rejected — From is not the mailbox or one of its aliases",
+              {
+                from: redactEmail(input.from),
+                allowed: allowedFrom.size,
+              },
+            );
             await recordOutcome(apiKeyId, "rejected");
-            callback(smtpError(`From address must be ${enforcedFrom}`, 550));
+            callback(
+              smtpError(
+                `From address must be your mailbox address or one of its aliases (${[...allowedFrom].join(", ")})`,
+                550,
+              ),
+            );
             return;
           }
 

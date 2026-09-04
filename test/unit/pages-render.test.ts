@@ -470,4 +470,28 @@ describe("MailboxesPage", () => {
     expect(html).toContain("Mailbox created");
     expect(html).not.toContain("$2b$12$hash");
   });
+
+  test("renders aliases with remove + add forms", () => {
+    const html = MailboxesPage({
+      mailboxes: [mailbox],
+      domains: [domain],
+      clientSettings: settings,
+      defaultQuotaMb: 1024,
+      mailboxesEnabled: true,
+      aliasesByMailbox: {
+        mbx_x: [
+          {
+            id: "mba_1",
+            mailboxId: "mbx_x",
+            domainId: "dom_x",
+            email: "support@example.com",
+            createdAt: now,
+          },
+        ],
+      },
+    });
+    expect(html).toContain("support@example.com");
+    expect(html).toContain("/dashboard/mailboxes/mbx_x/aliases/mba_1/delete");
+    expect(html).toContain('action="/dashboard/mailboxes/mbx_x/aliases"');
+  });
 });

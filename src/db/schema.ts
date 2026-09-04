@@ -19,3 +19,4 @@ export { smtpSubmissionUsage } from "../modules/smtp-submission/models/smtp-subm
 export { dmarcReports } from "../modules/dmarc-reports/models/dmarc-report.schema.ts";
 export { dmarcRecords } from "../modules/dmarc-reports/models/dmarc-record.schema.ts";
 export { mailboxes } from "../modules/mailboxes/models/mailbox.schema.ts";
+export { mailboxAliases } from "../modules/mailboxes/models/mailbox-alias.schema.ts";

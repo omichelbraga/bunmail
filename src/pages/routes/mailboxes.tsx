@@ -4,6 +4,7 @@ import { EmptyState } from "../components/empty-state.tsx";
 import { TimeDisplay } from "../components/time-display.tsx";
 import type {
   Mailbox,
+  MailboxAlias,
   MailboxClientSettings,
 } from "../../modules/mailboxes/types/mailbox.types.ts";
 import type { Domain } from "../../modules/domains/types/domain.types.ts";
@@ -19,6 +20,8 @@ interface MailboxesPageProps {
   defaultQuotaMb: number;
   /** Whether LMTP delivery / SMTP AUTH are switched on (`MAILBOXES_ENABLED`). */
   mailboxesEnabled: boolean;
+  /** Aliases per mailbox id (support@ → mike@). */
+  aliasesByMailbox?: Record<string, MailboxAlias[]>;
   flash?: { message: string; type: "success" | "error" };
 }
 
@@ -54,6 +57,7 @@ export function MailboxesPage({
   clientSettings,
   defaultQuotaMb,
   mailboxesEnabled,
+  aliasesByMailbox = {},
   flash,
 }: MailboxesPageProps) {
   return (
@@ -101,7 +105,7 @@ export function MailboxesPage({
               <dt>Port</dt>
               <dd class="font-mono">{clientSettings.imap.port}</dd>
               <dt>Security</dt>
-              <dd safe>{clientSettings.imap.security}</dd>
+              <dd>{clientSettings.imap.security}</dd>
             </dl>
           </div>
           <div>
@@ -116,7 +120,7 @@ export function MailboxesPage({
               <dt>Port</dt>
               <dd class="font-mono">{clientSettings.smtp.port}</dd>
               <dt>Security</dt>
-              <dd safe>{clientSettings.smtp.security}</dd>
+              <dd>{clientSettings.smtp.security}</dd>
             </dl>
           </div>
         </div>
@@ -213,6 +217,9 @@ export function MailboxesPage({
                   Created
                 </th>
                 <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                  Aliases
+                </th>
+                <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                   Password
                 </th>
                 <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
@@ -264,6 +271,46 @@ export function MailboxesPage({
                   </td>
                   <td class="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     <TimeDisplay value={mailbox.createdAt} />
+                  </td>
+                  <td class="px-4 py-3 min-w-[220px]">
+                    <ul class="space-y-1 mb-1.5">
+                      {(aliasesByMailbox[mailbox.id] ?? []).map((alias) => (
+                        <li class="flex items-center gap-2 text-xs">
+                          <span class="font-mono text-gray-700 dark:text-gray-300" safe>
+                            {alias.email}
+                          </span>
+                          <form
+                            method="POST"
+                            action={`/dashboard/mailboxes/${mailbox.id}/aliases/${alias.id}/delete`}
+                            class="inline"
+                          >
+                            <button
+                              type="submit"
+                              class="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
+                              onclick="return confirm('Remove this alias?')"
+                            >
+                              remove
+                            </button>
+                          </form>
+                        </li>
+                      ))}
+                    </ul>
+                    <form
+                      method="POST"
+                      action={`/dashboard/mailboxes/${mailbox.id}/aliases`}
+                      class="flex items-center gap-1.5"
+                    >
+                      <input
+                        type="email"
+                        name="email"
+                        required
+                        placeholder={`support@${mailbox.email.split("@")[1] ?? ""}`}
+                        class={`${inputClass} w-44 py-1`}
+                      />
+                      <button type="submit" class={linkButtonClass}>
+                        Add
+                      </button>
+                    </form>
                   </td>
                   <td class="px-4 py-3">
                     <form

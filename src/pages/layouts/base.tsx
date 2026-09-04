@@ -80,8 +80,18 @@ export function BaseLayout({
           {/* Sidebar navigation */}
           <Nav activeNav={activeNav} />
 
-          {/* Main content area */}
-          <main class="flex-1 overflow-y-auto p-6 lg:p-8">{children}</main>
+          {/*
+            Main content area. The email_off markers tell Cloudflare's
+            "Email Address Obfuscation" to leave this region alone: the
+            dashboard is full of real addresses (mailboxes, inbound, logs)
+            that operators copy, and obfuscation rewrites them into
+            "[email protected]" placeholders in the served HTML.
+          */}
+          <main class="flex-1 overflow-y-auto p-6 lg:p-8">
+            {"<!--email_off-->"}
+            {children}
+            {"<!--/email_off-->"}
+          </main>
         </div>
         {/* Prevent double form submissions — disables button + shows spinner on first click */}
         <script>

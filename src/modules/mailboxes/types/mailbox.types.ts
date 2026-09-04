@@ -1,11 +1,15 @@
 import type { InferSelectModel } from "drizzle-orm";
 import type { mailboxes } from "../models/mailbox.schema.ts";
+import type { mailboxAliases } from "../models/mailbox-alias.schema.ts";
 
 /**
  * The shape of a mailbox row returned from the database.
  * Inferred from the Drizzle schema so it never drifts.
  */
 export type Mailbox = InferSelectModel<typeof mailboxes>;
+
+/** The shape of a mailbox alias row. */
+export type MailboxAlias = InferSelectModel<typeof mailboxAliases>;
 
 /** Input required to create a mailbox. */
 export interface CreateMailboxInput {

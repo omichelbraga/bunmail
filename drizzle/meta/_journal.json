@@ -99,6 +99,13 @@
       "when": 1788505087641,
       "tag": "0013_mailboxes",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788507208509,
+      "tag": "0014_mailbox_aliases",
+      "breakpoints": true
     }
   ]
 }

@@ -56,7 +56,7 @@ Outlook / Thunderbird / Apple Mail ◀──IMAPS:993 (TLS)───────
 
 ## Database
 
-Table: `mailboxes` (migration `0013_mailboxes`)
+Tables: `mailboxes` (migration `0013_mailboxes`) and `mailbox_aliases` (`0014_mailbox_aliases`, see [Aliases](#aliases))
 
 | Column        | Type         | Constraints                                        |
 |---------------|--------------|----------------------------------------------------|
@@ -172,9 +172,26 @@ swaks --to you@gmail.com --from mike@example.com --server smtp.example.com:465 \
       --tlsc --auth-user mike@example.com --auth-password 'password'
 ```
 
+## Aliases
+
+An alias is an extra address that delivers into a mailbox and that the
+mailbox may send `From` (`support@example.com` → `mike@example.com`). Aliases
+live in `mailbox_aliases` (migration `0014`) and are resolved by BunMail —
+the inbound receiver maps alias → mailbox before the LMTP hand-off, and the
+submission server accepts the mailbox's own address or any of its aliases as
+`From`. Dovecot only ever sees the target mailbox. An alias must be on a
+registered domain and cannot collide with a mailbox or another alias.
+
+| Method | Path                                   | Description   |
+|--------|----------------------------------------|---------------|
+| POST   | `/api/v1/mailboxes/:id/aliases`        | `{ email }`   |
+| DELETE | `/api/v1/mailboxes/:id/aliases/:aliasId` | Remove      |
+
+Mailbox responses include `aliases: [{ id, email, createdAt }]`. The dashboard
+lists and edits aliases per mailbox row.
+
 ## Limitations (v1)
 
-- No aliases yet (`support@` → `mike@`); planned as a follow-up.
 - Sent mail from a client is not copied into the IMAP `Sent` folder by the
   server; mail clients do this themselves (all major ones do).
 - Sieve/filters, shared folders and webmail are out of scope.

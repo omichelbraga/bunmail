@@ -1333,6 +1333,8 @@ export const pagesPlugin = new Elysia({
         mailboxService.listMailboxes(),
         domainService.listDomains(),
       ]);
+      const aliasMap = await mailboxService.listAliasesByMailbox(list.map((m) => m.id));
+      const aliasesByMailbox = Object.fromEntries(aliasMap);
       const flash = query.flash
         ? {
             message: query.flash,
@@ -1348,6 +1350,7 @@ export const pagesPlugin = new Elysia({
           clientSettings={clientSettings}
           defaultQuotaMb={Math.round(config.mailboxes.defaultQuotaBytes / (1024 * 1024))}
           mailboxesEnabled={config.mailboxes.enabled}
+          aliasesByMailbox={aliasesByMailbox}
           flash={flash}
         />
       );
@@ -1482,6 +1485,46 @@ export const pagesPlugin = new Elysia({
       params: t.Object({ id: t.String() }),
       body: t.Object({ enabled: t.String() }),
     },
+  )
+
+  /** POST /dashboard/mailboxes/:id/aliases — add an alias to a mailbox. */
+  .post(
+    "/mailboxes/:id/aliases",
+    async ({ params, body, set }) => {
+      try {
+        const alias = await mailboxService.createAlias(params.id, body.email);
+        set.status = 302;
+        set.headers["location"] =
+          `/dashboard/mailboxes?flash=${encodeURIComponent(`Alias ${alias.email} added`)}`;
+      } catch (error) {
+        const message =
+          error instanceof MailboxValidationError || error instanceof MailboxConflictError
+            ? error.message
+            : "Failed to add alias";
+        set.status = 302;
+        set.headers["location"] =
+          `/dashboard/mailboxes?flash=${encodeURIComponent(message)}&flashType=error`;
+      }
+      return "";
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({ email: t.String({ maxLength: 255 }) }),
+    },
+  )
+
+  /** POST /dashboard/mailboxes/:id/aliases/:aliasId/delete — remove an alias. */
+  .post(
+    "/mailboxes/:id/aliases/:aliasId/delete",
+    async ({ params, set }) => {
+      const alias = await mailboxService.deleteAlias(params.id, params.aliasId);
+      set.status = 302;
+      set.headers["location"] = alias
+        ? `/dashboard/mailboxes?flash=${encodeURIComponent("Alias removed")}`
+        : `/dashboard/mailboxes?flash=${encodeURIComponent("Alias not found")}&flashType=error`;
+      return "";
+    },
+    { params: t.Object({ id: t.String(), aliasId: t.String() }) },
   )
 
   /** POST /dashboard/mailboxes/:id/delete — delete the mailbox row. */
