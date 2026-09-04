@@ -9,6 +9,7 @@ import {
   WebhookIcon,
   InboundIcon,
   NoEntryIcon,
+  MailboxIcon,
   DocsIcon,
   ThemeIcon,
   LogoutIcon,
@@ -33,7 +34,8 @@ interface BaseLayoutProps {
     | "webhooks"
     | "inbound"
     | "dmarc-reports"
-    | "suppressions";
+    | "suppressions"
+    | "mailboxes";
 }
 
 /**
@@ -123,6 +125,12 @@ function Nav({ activeNav }: { activeNav?: string }) {
     { id: "domains", label: "Domains", href: "/dashboard/domains", icon: GlobeIcon },
     { id: "webhooks", label: "Webhooks", href: "/dashboard/webhooks", icon: WebhookIcon },
     { id: "inbound", label: "Inbound", href: "/dashboard/inbound", icon: InboundIcon },
+    {
+      id: "mailboxes",
+      label: "Mailboxes",
+      href: "/dashboard/mailboxes",
+      icon: MailboxIcon,
+    },
     {
       id: "dmarc-reports",
       label: "DMARC",

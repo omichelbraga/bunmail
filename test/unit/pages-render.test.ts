@@ -33,6 +33,7 @@ import { SuppressionsPage } from "../../src/pages/routes/suppressions.tsx";
 import { TemplatesPage } from "../../src/pages/routes/templates.tsx";
 import { TemplateDetailPage } from "../../src/pages/routes/template-detail.tsx";
 import { WebhooksPage } from "../../src/pages/routes/webhooks.tsx";
+import { MailboxesPage } from "../../src/pages/routes/mailboxes.tsx";
 import { LoginPage, DashboardDisabledPage } from "../../src/pages/routes/login.tsx";
 import { LandingPage } from "../../src/pages/routes/landing.tsx";
 import { FlashMessage } from "../../src/pages/components/flash-message.tsx";
@@ -417,5 +418,56 @@ describe("Component render smoke tests", () => {
     }
     /** Unknown status — should still render. */
     expect(typeof StatusBadge({ status: "unknown" })).toBe("string");
+  });
+});
+
+describe("MailboxesPage", () => {
+  const settings = {
+    imap: { host: "imap.example.com", port: 993, security: "SSL/TLS" as const },
+    smtp: { host: "smtp.example.com", port: 587, security: "STARTTLS" as const },
+  };
+  const mailbox = {
+    id: "mbx_x",
+    domainId: "dom_x",
+    email: "mike@example.com",
+    localPart: "mike",
+    passwordHash: "{BLF-CRYPT}$2b$12$hash",
+    quotaBytes: 2 * 1024 * 1024 * 1024,
+    enabled: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  test("renders the empty state without domains", () => {
+    const html = MailboxesPage({
+      mailboxes: [],
+      domains: [],
+      clientSettings: settings,
+      defaultQuotaMb: 1024,
+      mailboxesEnabled: true,
+    });
+    expect(html).toContain("Mailboxes");
+    expect(html).toContain("Register a domain");
+    expect(html).toContain("imap.example.com");
+  });
+
+  test("renders rows, the disabled warning and never the password hash", () => {
+    const html = MailboxesPage({
+      mailboxes: [
+        mailbox,
+        { ...mailbox, id: "mbx_y", email: "sam@example.com", enabled: false },
+      ],
+      domains: [domain],
+      clientSettings: settings,
+      defaultQuotaMb: 1024,
+      mailboxesEnabled: false,
+      flash: { message: "Mailbox created", type: "success" },
+    });
+    expect(html).toContain("mike@example.com");
+    expect(html).toContain("sam@example.com");
+    expect(html).toContain("2 GB");
+    expect(html).toContain("MAILBOXES_ENABLED is false");
+    expect(html).toContain("Mailbox created");
+    expect(html).not.toContain("$2b$12$hash");
   });
 });

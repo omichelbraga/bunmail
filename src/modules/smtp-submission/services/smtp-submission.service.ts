@@ -18,6 +18,12 @@ import { SuppressedRecipientError } from "../../suppressions/errors.ts";
 import type { SendEmailInput } from "../../emails/types/email.types.ts";
 import { buildSubmissionInput } from "../message-mapper.ts";
 import { recordOutcome, getAcceptedToday } from "./usage.service.ts";
+import {
+  findMailboxByEmail,
+  verifyMailboxPassword,
+  getMailboxById,
+  getMailboxSubmissionKeyId,
+} from "../../mailboxes/services/mailbox.service.ts";
 
 /**
  * The SMTP submission server (#120) lets any SMTP-capable app (Infisical,
@@ -65,6 +71,37 @@ interface WindowEntry {
 const connectionMap = new Map<string, WindowEntry>();
 /** IP → failed-AUTH-count state (key brute-force throttle). */
 const authFailureMap = new Map<string, WindowEntry>();
+
+/**
+ * `session.user` is a string, so the two credential types share it via a
+ * prefix: `mbx:<mailbox id>` for mailbox logins, a bare `key_…` id for
+ * API-key logins (unchanged from #120).
+ */
+const MAILBOX_USER_PREFIX = "mbx:";
+
+/** Interval handle for the TLS certificate reload watcher. */
+let tlsReloadInterval: ReturnType<typeof setInterval> | null = null;
+/** Fingerprint of the cert+key currently loaded, to detect renewals. */
+let loadedTlsFingerprint: string | null = null;
+
+/**
+ * Authenticates `user@domain` + mailbox password (docs/mailboxes.md).
+ * Returns the mailbox id on success, null on any failure (unknown address,
+ * disabled mailbox, wrong password). Only attempted when the username looks
+ * like an address; API-key AUTH is tried afterwards so existing clients
+ * that happen to use an email as username keep working.
+ */
+async function authenticateMailbox(
+  username: string,
+  password: string,
+): Promise<string | null> {
+  if (!config.mailboxes.enabled || !config.mailboxes.smtpAuthEnabled) return null;
+  if (!username.includes("@") || !password) return null;
+  const mailbox = await findMailboxByEmail(username);
+  if (!mailbox || !mailbox.enabled) return null;
+  const ok = await verifyMailboxPassword(password, mailbox.passwordHash);
+  return ok ? mailbox.id : null;
+}
 
 /**
  * Generic sliding-window check-and-increment. Returns true once `max`
@@ -136,6 +173,11 @@ function smtpError(message: string, responseCode: number): Error {
   const err = new Error(message) as Error & { responseCode: number };
   err.responseCode = responseCode;
   return err;
+}
+
+/** Cheap change detector for the PEM pair (lengths + content hash). */
+function tlsFingerprint(material: { key: Buffer; cert: Buffer }): string {
+  return Bun.hash(Buffer.concat([material.cert, material.key])).toString(16);
 }
 
 /* ─── Server lifecycle ─── */
@@ -261,12 +303,28 @@ export function start(portOverride?: number): void {
         return callback(smtpError("Authentication credentials required", 535));
       }
 
-      findByHash(hashApiKey(candidate))
-        .then((apiKey) => {
+      /**
+       * Mailbox credentials first (`user@domain` + mailbox password), then
+       * the API-key path. A mailbox mismatch falls through rather than
+       * failing, so a client using an email as username with an API key
+       * as password (allowed since #120) is unaffected.
+       */
+      authenticateMailbox(auth.username ?? "", auth.password ?? "")
+        .then(async (mailboxId) => {
+          if (mailboxId) {
+            authFailureMap.delete(ip);
+            logger.info("SMTP submission mailbox authenticated", {
+              ip,
+              mailboxId,
+              user: redactEmail(auth.username ?? ""),
+            });
+            return callback(null, { user: `${MAILBOX_USER_PREFIX}${mailboxId}` });
+          }
+          const apiKey = await findByHash(hashApiKey(candidate));
           if (!apiKey || !apiKey.isActive) {
             if (authRateLimit.enabled) recordAuthFailure(ip);
             logger.warn("SMTP submission AUTH failed — invalid or inactive key", { ip });
-            return callback(smtpError("Invalid API key", 535));
+            return callback(smtpError("Invalid credentials", 535));
           }
           /** Success — clear the failure counter and stash the key id. */
           authFailureMap.delete(ip);
@@ -348,12 +406,42 @@ export function start(portOverride?: number): void {
       stream.on("end", async () => {
         if (aborted) return;
 
-        /** onAuth stashed the API key id here; guard defensively. */
-        const apiKeyId = session.user;
-        if (!apiKeyId) {
+        /** onAuth stashed the API key id (or `mbx:<id>`) here; guard defensively. */
+        const sessionUser = session.user;
+        if (!sessionUser) {
           logger.error("SMTP submission DATA without an authenticated session");
           callback(smtpError("Authentication required", 530));
           return;
+        }
+
+        /**
+         * Mailbox sessions: the email is attributed to the system
+         * "Mailbox SMTP" API key (every `emails` row needs an owning key —
+         * queue, stats, suppressions and dashboard filters rely on it) and
+         * the `From` is pinned to the mailbox address so a mailbox login
+         * can't impersonate other identities on the domain.
+         */
+        let apiKeyId = sessionUser;
+        let enforcedFrom: string | null = null;
+        if (sessionUser.startsWith(MAILBOX_USER_PREFIX)) {
+          const mailbox = await getMailboxById(
+            sessionUser.slice(MAILBOX_USER_PREFIX.length),
+          );
+          if (!mailbox || !mailbox.enabled) {
+            logger.warn("SMTP submission DATA rejected — mailbox no longer available");
+            callback(smtpError("Mailbox is disabled", 530));
+            return;
+          }
+          enforcedFrom = mailbox.email;
+          try {
+            apiKeyId = await getMailboxSubmissionKeyId();
+          } catch (error) {
+            logger.error("SMTP submission — failed to resolve mailbox system key", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            callback(smtpError("Temporary local error", 451));
+            return;
+          }
         }
 
         try {
@@ -403,6 +491,16 @@ export function start(portOverride?: number): void {
             text: typeof parsed.text === "string" ? parsed.text : undefined,
           });
 
+          if (enforcedFrom && input.from.trim().toLowerCase() !== enforcedFrom) {
+            logger.warn("SMTP submission rejected — From does not match mailbox", {
+              from: redactEmail(input.from),
+              mailbox: redactEmail(enforcedFrom),
+            });
+            await recordOutcome(apiKeyId, "rejected");
+            callback(smtpError(`From address must be ${enforcedFrom}`, 550));
+            return;
+          }
+
           /** Tag the row as SMTP-sourced so the dashboard can filter it (#137). */
           const email = await createEmail(input, apiKeyId, "smtp");
           await recordOutcome(apiKeyId, "accepted");
@@ -446,6 +544,38 @@ export function start(portOverride?: number): void {
     logger.error("SMTP submission server error", { error: err.message });
   });
 
+  /**
+   * Certificate renewal watcher. Let's Encrypt certs rotate every ~60
+   * days; re-read the PEM files periodically and swap the TLS context in
+   * place (`updateSecureContext`) so STARTTLS keeps presenting a valid
+   * chain without restarting the server. Mirrors the Dovecot sidecar's
+   * `doveadm reload` on cert change.
+   */
+  if (tlsOptions) {
+    loadedTlsFingerprint = tlsFingerprint(tlsOptions);
+    tlsReloadInterval = setInterval(
+      () => {
+        try {
+          const fresh = {
+            cert: readFileSync(tls.certPath),
+            key: readFileSync(tls.keyPath),
+          };
+          const fp = tlsFingerprint(fresh);
+          if (fp !== loadedTlsFingerprint && server) {
+            server.updateSecureContext(fresh);
+            loadedTlsFingerprint = fp;
+            logger.info("SMTP submission TLS certificate reloaded");
+          }
+        } catch (error) {
+          logger.warn("SMTP submission TLS reload check failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+      10 * 60 * 1000,
+    );
+  }
+
   /** Periodic sweep of expired rate-limit entries (every 5 minutes). */
   cleanupInterval = setInterval(
     () => {
@@ -468,6 +598,10 @@ export function stop(): void {
   if (cleanupInterval) {
     clearInterval(cleanupInterval);
     cleanupInterval = null;
+  }
+  if (tlsReloadInterval) {
+    clearInterval(tlsReloadInterval);
+    tlsReloadInterval = null;
   }
   if (server) {
     server.close(() => {

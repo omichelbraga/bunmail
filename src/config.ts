@@ -268,6 +268,60 @@ export const config = {
   },
 
   /**
+   * IMAP mailboxes (Dovecot integration, see docs/mailboxes.md).
+   *
+   * BunMail stays the SMTP edge: the inbound receiver accepts mail for a
+   * registered domain as before and, when a recipient is an enabled
+   * mailbox, hands a copy to Dovecot over LMTP (private network) *before*
+   * running its normal processing (bounce/DMARC branching, `inbound_emails`,
+   * webhooks, notifications). Dovecot authenticates IMAP logins directly
+   * against the `mailboxes` table in BunMail's own Postgres.
+   */
+  mailboxes: {
+    /**
+     * Master switch. When false, no LMTP delivery is attempted and mailbox
+     * credentials are not accepted by the SMTP submission server. The
+     * management API + dashboard page stay available so operators can
+     * prepare mailboxes before enabling delivery.
+     */
+    enabled: optionalEnv("MAILBOXES_ENABLED", "false") === "true",
+
+    /** Dovecot LMTP endpoint, reachable on the private Docker network only. */
+    lmtp: {
+      host: optionalEnv("MAILBOX_LMTP_HOST", "dovecot"),
+      port: parseInt(optionalEnv("MAILBOX_LMTP_PORT", "24"), 10),
+    },
+
+    /**
+     * Default quota for new mailboxes, in MB (operators think in MB, the
+     * row stores bytes). Default 1024 MB.
+     */
+    defaultQuotaBytes:
+      Math.max(1, parseInt(optionalEnv("MAILBOX_DEFAULT_QUOTA_MB", "1024"), 10)) *
+      1024 *
+      1024,
+
+    /**
+     * Hostnames shown to end users in the "mail client settings" block
+     * (dashboard + API). They are display values only — they must resolve
+     * (DNS-only, not proxied) to this server. Defaults derive from
+     * `MAIL_HOSTNAME` so a single-host setup needs no extra config.
+     */
+    imapHost: optionalEnv("MAILBOX_IMAP_HOST", optionalEnv("MAIL_HOSTNAME", "localhost")),
+    imapPort: parseInt(optionalEnv("MAILBOX_IMAP_PORT", "993"), 10),
+    smtpHost: optionalEnv("MAILBOX_SMTP_HOST", optionalEnv("MAIL_HOSTNAME", "localhost")),
+
+    /**
+     * Let mailbox credentials (`user@domain` + mailbox password) authenticate
+     * on the SMTP submission server, so a mail client can use the same
+     * login for incoming (IMAP) and outgoing (SMTP). The sender `From` is
+     * pinned to the mailbox address. Default true; requires
+     * `SMTP_SUBMISSION_ENABLED=true` to matter.
+     */
+    smtpAuthEnabled: optionalEnv("MAILBOX_SMTP_AUTH_ENABLED", "true") === "true",
+  },
+
+  /**
    * Inbound notification (#106). When an inbound message is accepted by
    * the SMTP receiver for a domain that has a `notify_email` set, BunMail
    * sends a "you have new mail" summary email to that address, signed with

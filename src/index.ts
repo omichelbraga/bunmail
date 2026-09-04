@@ -14,6 +14,7 @@ import { SuppressedRecipientError } from "./modules/suppressions/errors.ts";
 import { UnauthorizedSenderError } from "./modules/api-keys/errors.ts";
 import { BlockedUrlError } from "./utils/ssrf-guard.ts";
 import { dmarcReportsPlugin } from "./modules/dmarc-reports/dmarc-reports.plugin.ts";
+import { mailboxesPlugin } from "./modules/mailboxes/mailboxes.plugin.ts";
 import { pagesPlugin } from "./pages/pages.plugin.tsx";
 import { landingPlugin } from "./pages/landing.plugin.tsx";
 import { faviconPlugin } from "./pages/favicon.ts";
@@ -90,6 +91,11 @@ const app = new Elysia()
             name: "DMARC Reports",
             description:
               "Inspect parsed DMARC aggregate (rua) reports received from remote receivers",
+          },
+          {
+            name: "Mailboxes",
+            description:
+              "Manage IMAP mailboxes (Dovecot-backed) — create, change password, quota, enable/disable",
           },
           { name: "Health", description: "Server health checks" },
         ],
@@ -226,6 +232,8 @@ const app = new Elysia()
   .use(smtpSubmissionPlugin)
   /** DMARC reports module — GET /, GET /:id */
   .use(dmarcReportsPlugin)
+  /** Mailboxes module — POST /, GET /, GET /:id, PATCH /:id, DELETE /:id */
+  .use(mailboxesPlugin)
   /** Dashboard — server-rendered UI under /dashboard */
   .use(pagesPlugin)
   .listen({
@@ -266,6 +274,16 @@ if (config.smtp.enabled) {
  * Dify, a Nodemailer backend, …) send *through* BunMail. Opt-in and
  * separate from the inbound receiver above — see docs/smtp-submission.md.
  */
+if (config.mailboxes.enabled) {
+  logger.info(
+    "IMAP mailboxes enabled — inbound mail for enabled mailboxes is delivered to Dovecot over LMTP",
+    {
+      lmtp: `${config.mailboxes.lmtp.host}:${config.mailboxes.lmtp.port}`,
+      smtpAuth: config.mailboxes.smtpAuthEnabled,
+    },
+  );
+}
+
 if (config.smtpSubmission.enabled) {
   smtpSubmission.start();
 } else {

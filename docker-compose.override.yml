@@ -5,12 +5,18 @@
 # convention that `*.override.yml` is a developer-local concern, but it is
 # checked in here because the default we want for `bun run dev` is the
 # same for everyone: publish the postgres port to the host so the app can
-# connect from outside the compose network.
+# connect from outside the compose network, and publish the HTTP port so
+# the dashboard is reachable at http://localhost:3000 without a proxy.
 #
 # In production, run with `docker compose -f docker-compose.yml up`
-# (skipping this override) so the database stays internal.
+# (skipping this override) so the database stays internal and HTTP is
+# only reachable through the reverse proxy.
 
 services:
+  app:
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+
   db:
     ports:
       - "5432:5432"

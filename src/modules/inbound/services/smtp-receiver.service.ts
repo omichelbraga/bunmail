@@ -10,6 +10,11 @@ import { notifyInboundReceived } from "./inbound-notify.service.ts";
 import { parseBounce } from "../../bounces/services/bounce-parser.service.ts";
 import { handleParsedBounce } from "../../bounces/services/bounce-handler.service.ts";
 import { persistDmarcReportFromInbound } from "../../dmarc-reports/services/dmarc-handler.service.ts";
+import { resolveDeliverableMailboxes } from "../../mailboxes/services/mailbox.service.ts";
+import {
+  deliverToMailboxes,
+  LmtpDeliveryError,
+} from "../../mailboxes/services/lmtp-delivery.service.ts";
 import { config } from "../../../config.ts";
 import { logger } from "../../../utils/logger.ts";
 import { redactEmail } from "../../../utils/redact.ts";
@@ -344,6 +349,59 @@ export function start(): void {
         if (aborted) return;
         try {
           const rawMessage = Buffer.concat(chunks).toString("utf-8");
+
+          /**
+           * IMAP mailbox delivery (docs/mailboxes.md). If any accepted
+           * envelope recipient is an enabled mailbox, hand the raw message
+           * to Dovecot over LMTP FIRST. Ordering matters: a Dovecot outage
+           * must surface as a temporary SMTP failure (451) so the upstream
+           * MTA retries and the mailbox user never silently loses mail —
+           * and because nothing has been persisted yet, that retry can't
+           * duplicate an `inbound_emails` row or a webhook. Recipients
+           * that aren't mailboxes (programmable addresses like
+           * `reply+123@…`, disabled mailboxes) are untouched here and flow
+           * through BunMail's normal processing below, which also still
+           * runs for mailbox mail so it stays visible in logs, the
+           * dashboard, the API and `email.received` webhooks.
+           */
+          if (config.mailboxes.enabled) {
+            const envelopeRecipients = (session.envelope.rcptTo ?? []).map(
+              (r) => r.address,
+            );
+            const mailboxTargets = await resolveDeliverableMailboxes(envelopeRecipients);
+            if (mailboxTargets.length > 0) {
+              const envelopeFrom =
+                session.envelope.mailFrom && typeof session.envelope.mailFrom === "object"
+                  ? session.envelope.mailFrom.address
+                  : "";
+              try {
+                const delivery = await deliverToMailboxes(
+                  rawMessage,
+                  envelopeFrom,
+                  mailboxTargets,
+                );
+                if (delivery.rejected.length > 0) {
+                  logger.warn("LMTP rejected some mailbox recipients", {
+                    rejected: delivery.rejected.map((r) => ({
+                      to: redactEmail(r.recipient),
+                      response: r.response,
+                    })),
+                  });
+                }
+              } catch (error) {
+                if (error instanceof LmtpDeliveryError) {
+                  const err = new Error(error.message) as Error & {
+                    responseCode: number;
+                  };
+                  err.responseCode = error.responseCode;
+                  callback(err);
+                  return;
+                }
+                throw error;
+              }
+            }
+          }
+
           const parsed = await simpleParser(rawMessage);
 
           /**

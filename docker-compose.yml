@@ -1,33 +1,52 @@
 # BunMail — Docker Compose
 #
-# Starts the BunMail API server and a PostgreSQL database.
+# Services:
+#   app      BunMail (REST API, dashboard, inbound SMTP :25, submission :587)
+#   db       PostgreSQL — shared by BunMail AND Dovecot (mailbox auth)
+#   dovecot  IMAP (:993 TLS, :143 STARTTLS) + LMTP (private) — IMAP mailboxes
+#   acme     Let's Encrypt (DNS-01 via Cloudflare) for the mail hostnames
+#
 # Usage: docker compose up -d
+# The app waits for PostgreSQL to be healthy before starting, then
+# automatically runs database migrations on boot. Dovecot reads the
+# `mailboxes` table those migrations create.
 #
-# The app waits for PostgreSQL to be healthy before starting,
-# then automatically runs database migrations on boot.
-#
-# Set POSTGRES_PASSWORD in your .env file (required).
-# Never commit real credentials to version control.
+# Set POSTGRES_PASSWORD (and the ACME/Cloudflare vars) in your .env.
+# Never commit real credentials to version control. See docs/mailboxes.md.
 
 services:
   app:
     build: .
+    # HTTP (API + dashboard) is reached through your reverse proxy
+    # (Coolify/Traefik). It is deliberately NOT published on the host here;
+    # docker-compose.override.yml publishes it for local development.
+    expose:
+      - "${PORT:-3000}"
     ports:
-      - "${PORT:-3000}:${PORT:-3000}" # HTTP API + Dashboard
-      # Inbound SMTP is OFF by default. To enable: (1) uncomment the line below,
-      # (2) set SMTP_ENABLED=true and SMTP_PORT=25 in your .env. See docs/inbound.md.
-      # - "${SMTP_PORT:-25}:${SMTP_PORT:-25}"
-      # SMTP submission (let apps send THROUGH BunMail) is OFF by default. To enable:
-      # (1) uncomment the line below, (2) set SMTP_SUBMISSION_ENABLED=true in your .env.
-      # See docs/smtp-submission.md.
-      # - "${SMTP_SUBMISSION_PORT:-587}:${SMTP_SUBMISSION_PORT:-587}"
+      # Inbound SMTP (MX). Requires SMTP_ENABLED=true and SMTP_PORT=25 in .env.
+      - "${SMTP_PORT:-25}:${SMTP_PORT:-25}"
+      # SMTP submission (apps + mailbox users sending THROUGH BunMail).
+      # Requires SMTP_SUBMISSION_ENABLED=true. STARTTLS uses the acme cert.
+      - "${SMTP_SUBMISSION_PORT:-587}:${SMTP_SUBMISSION_PORT:-587}"
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-bunmail}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-bunmail}
       BUNMAIL_ENV: production
+      # Dovecot LMTP on the private network (docs/mailboxes.md)
+      MAILBOX_LMTP_HOST: dovecot
+      MAILBOX_LMTP_PORT: "24"
+      # Let's Encrypt cert from the acme sidecar → STARTTLS on :587
+      SMTP_SUBMISSION_TLS_CERT: /certs/fullchain.pem
+      SMTP_SUBMISSION_TLS_KEY: /certs/privkey.pem
+    volumes:
+      - certs:/certs:ro
     depends_on:
       db:
         condition: service_healthy
+      acme:
+        condition: service_healthy
+      dovecot:
+        condition: service_started
     restart: unless-stopped
 
   db:
@@ -45,5 +64,59 @@ services:
       retries: 5
     restart: unless-stopped
 
+  dovecot:
+    build: ./dovecot
+    ports:
+      - "${IMAPS_PORT:-993}:993"
+      - "${IMAP_PORT:-143}:143"
+      # LMTP (:24) is intentionally NOT published — private network only.
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-bunmail}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-bunmail}
+      MAIL_HOSTNAME: ${MAIL_HOSTNAME:-localhost}
+      CERT_DIR: /certs
+    volumes:
+      - maildata:/var/mail
+      - certs:/certs:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      acme:
+        condition: service_healthy
+    restart: unless-stopped
+
+  acme:
+    build: ./acme
+    environment:
+      # Space-separated hostnames; the first is the certificate CN.
+      ACME_DOMAINS: ${ACME_DOMAINS:-${MAIL_HOSTNAME:-localhost}}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env (Let's Encrypt account)}
+      ACME_STAGING: ${ACME_STAGING:-false}
+      # Cloudflare API token with Zone:DNS:Edit on the zone (DNS-01)
+      CF_Token: ${CF_DNS_API_TOKEN:?Set CF_DNS_API_TOKEN in .env}
+      CF_Zone_ID: ${CF_ZONE_ID:-}
+      CF_Account_ID: ${CF_ACCOUNT_ID:-}
+      CERT_DIR: /certs
+    volumes:
+      - acme:/acme.sh
+      - certs:/certs
+    healthcheck:
+      # Healthy as soon as a (placeholder or real) cert pair exists, so
+      # dependants can boot; they reload when the real cert lands.
+      test: ["CMD-SHELL", "test -s /certs/fullchain.pem && test -s /certs/privkey.pem"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  # Maildir storage for every mailbox — MUST be persistent.
+  maildata:
+  # Let's Encrypt cert pair shared by dovecot (IMAPS) and app (STARTTLS).
+  certs:
+  # acme.sh account + issued certs (so renewals don't re-register).
+  acme:

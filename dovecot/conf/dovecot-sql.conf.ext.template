@@ -1,0 +1,29 @@
+# ───────────────────────────────────────────────────────
+# BunMail — Dovecot SQL auth against BunMail's Postgres
+#
+# Rendered by entrypoint.sh: the __PLACEHOLDER__ tokens are replaced
+# from environment variables at container start. The `mailboxes` table
+# is owned and migrated by BunMail (src/modules/mailboxes).
+# ───────────────────────────────────────────────────────
+
+driver = pgsql
+connect = host=__DB_HOST__ port=__DB_PORT__ dbname=__DB_NAME__ user=__DB_USER__ password=__DB_PASSWORD__
+
+# BunMail stores hashes WITH a scheme prefix ({BLF-CRYPT}$2b$…); the
+# default only applies to rows without one.
+default_pass_scheme = BLF-CRYPT
+
+# %Lu = lower-cased username (full address). Dovecot SQL-escapes variables.
+password_query = \
+  SELECT email AS "user", password_hash AS password \
+  FROM mailboxes \
+  WHERE email = '%Lu' AND enabled = true
+
+user_query = \
+  SELECT '/var/mail/%Ld/%Ln' AS home, \
+         5000 AS uid, 5000 AS gid, \
+         ('*:bytes=' || quota_bytes) AS quota_rule \
+  FROM mailboxes \
+  WHERE email = '%Lu' AND enabled = true
+
+iterate_query = SELECT email AS "user" FROM mailboxes WHERE enabled = true

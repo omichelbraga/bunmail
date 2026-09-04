@@ -34,6 +34,7 @@ import { InboundDetailPage } from "./routes/inbound-detail.tsx";
 import { DmarcReportsPage } from "./routes/dmarc-reports.tsx";
 import { DmarcReportDetailPage } from "./routes/dmarc-report-detail.tsx";
 import { SuppressionsPage } from "./routes/suppressions.tsx";
+import { MailboxesPage } from "./routes/mailboxes.tsx";
 
 /* ─── Services ─── */
 import * as statsService from "../modules/emails/services/stats.service.ts";
@@ -48,6 +49,11 @@ import * as inboundService from "../modules/inbound/services/inbound.service.ts"
 import * as dmarcReportsService from "../modules/dmarc-reports/services/dmarc-reports.service.ts";
 import * as suppressionService from "../modules/suppressions/services/suppression.service.ts";
 import { verifyDomain } from "../modules/domains/services/dns-verification.service.ts";
+import * as mailboxService from "../modules/mailboxes/services/mailbox.service.ts";
+import {
+  MailboxConflictError,
+  MailboxValidationError,
+} from "../modules/mailboxes/errors.ts";
 
 /**
  * Normalises a form field that can come back either as a single string
@@ -1312,6 +1318,185 @@ export const pagesPlugin = new Elysia({
         flashType: t.Optional(t.String()),
       }),
     },
+  )
+
+  /* ─── Mailboxes (IMAP, Dovecot-backed — docs/mailboxes.md) ─── */
+
+  /**
+   * GET /dashboard/mailboxes
+   * Mailbox list + create form + mail-client settings block.
+   */
+  .get(
+    "/mailboxes",
+    async ({ query }) => {
+      const [list, domainList] = await Promise.all([
+        mailboxService.listMailboxes(),
+        domainService.listDomains(),
+      ]);
+      const flash = query.flash
+        ? {
+            message: query.flash,
+            type: (query.flashType ?? "success") as "success" | "error",
+          }
+        : undefined;
+      const { username: _username, ...clientSettings } =
+        mailboxService.getMailboxClientSettings({ email: "" });
+      return (
+        <MailboxesPage
+          mailboxes={list}
+          domains={domainList}
+          clientSettings={clientSettings}
+          defaultQuotaMb={Math.round(config.mailboxes.defaultQuotaBytes / (1024 * 1024))}
+          mailboxesEnabled={config.mailboxes.enabled}
+          flash={flash}
+        />
+      );
+    },
+    {
+      query: t.Object({
+        flash: t.Optional(t.String()),
+        flashType: t.Optional(t.String()),
+      }),
+    },
+  )
+
+  /**
+   * POST /dashboard/mailboxes
+   * Creates a mailbox from the form (local part + domain select).
+   */
+  .post(
+    "/mailboxes",
+    async ({ body, set }) => {
+      const email = `${body.localPart.trim()}@${body.domain.trim()}`;
+      const quotaMb = body.quotaMb ? parseInt(body.quotaMb, 10) : NaN;
+      try {
+        await mailboxService.createMailbox({
+          email,
+          password: body.password,
+          quotaBytes: Number.isFinite(quotaMb) ? quotaMb * 1024 * 1024 : undefined,
+        });
+        logger.info("Mailbox created via dashboard", { email: redactEmail(email) });
+        set.status = 302;
+        set.headers["location"] =
+          `/dashboard/mailboxes?flash=${encodeURIComponent(`Mailbox ${email} created`)}`;
+      } catch (error) {
+        const message =
+          error instanceof MailboxValidationError || error instanceof MailboxConflictError
+            ? error.message
+            : "Failed to create mailbox";
+        if (!(
+          error instanceof MailboxValidationError || error instanceof MailboxConflictError
+        )) {
+          logger.error("Failed to create mailbox via dashboard", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        set.status = 302;
+        set.headers["location"] =
+          `/dashboard/mailboxes?flash=${encodeURIComponent(message)}&flashType=error`;
+      }
+      return "";
+    },
+    {
+      body: t.Object({
+        localPart: t.String({ maxLength: 64 }),
+        domain: t.String({ maxLength: 255 }),
+        password: t.String({ maxLength: 256 }),
+        quotaMb: t.Optional(t.String()),
+      }),
+    },
+  )
+
+  /** POST /dashboard/mailboxes/:id/password — change the mailbox password. */
+  .post(
+    "/mailboxes/:id/password",
+    async ({ params, body, set }) => {
+      try {
+        const updated = await mailboxService.updateMailbox(params.id, {
+          password: body.password,
+        });
+        set.status = 302;
+        set.headers["location"] = updated
+          ? `/dashboard/mailboxes?flash=${encodeURIComponent("Password changed")}`
+          : `/dashboard/mailboxes?flash=${encodeURIComponent("Mailbox not found")}&flashType=error`;
+      } catch (error) {
+        const message =
+          error instanceof MailboxValidationError
+            ? error.message
+            : "Failed to change password";
+        set.status = 302;
+        set.headers["location"] =
+          `/dashboard/mailboxes?flash=${encodeURIComponent(message)}&flashType=error`;
+      }
+      return "";
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({ password: t.String({ maxLength: 256 }) }),
+    },
+  )
+
+  /** POST /dashboard/mailboxes/:id/quota — set the quota (MB). */
+  .post(
+    "/mailboxes/:id/quota",
+    async ({ params, body, set }) => {
+      const quotaMb = parseInt(body.quotaMb, 10);
+      try {
+        const updated = await mailboxService.updateMailbox(params.id, {
+          quotaBytes: Number.isFinite(quotaMb) ? quotaMb * 1024 * 1024 : NaN,
+        });
+        set.status = 302;
+        set.headers["location"] = updated
+          ? `/dashboard/mailboxes?flash=${encodeURIComponent("Quota updated")}`
+          : `/dashboard/mailboxes?flash=${encodeURIComponent("Mailbox not found")}&flashType=error`;
+      } catch (error) {
+        const message =
+          error instanceof MailboxValidationError
+            ? error.message
+            : "Failed to update quota";
+        set.status = 302;
+        set.headers["location"] =
+          `/dashboard/mailboxes?flash=${encodeURIComponent(message)}&flashType=error`;
+      }
+      return "";
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({ quotaMb: t.String() }),
+    },
+  )
+
+  /** POST /dashboard/mailboxes/:id/toggle — enable / disable. */
+  .post(
+    "/mailboxes/:id/toggle",
+    async ({ params, body, set }) => {
+      const enabled = body.enabled === "true";
+      const updated = await mailboxService.updateMailbox(params.id, { enabled });
+      set.status = 302;
+      set.headers["location"] = updated
+        ? `/dashboard/mailboxes?flash=${encodeURIComponent(enabled ? "Mailbox enabled" : "Mailbox disabled")}`
+        : `/dashboard/mailboxes?flash=${encodeURIComponent("Mailbox not found")}&flashType=error`;
+      return "";
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({ enabled: t.String() }),
+    },
+  )
+
+  /** POST /dashboard/mailboxes/:id/delete — delete the mailbox row. */
+  .post(
+    "/mailboxes/:id/delete",
+    async ({ params, set }) => {
+      const deleted = await mailboxService.deleteMailbox(params.id);
+      if (deleted) logger.info("Mailbox deleted via dashboard", { id: params.id });
+      set.status = 302;
+      set.headers["location"] = deleted
+        ? `/dashboard/mailboxes?flash=${encodeURIComponent("Mailbox deleted")}`
+        : `/dashboard/mailboxes?flash=${encodeURIComponent("Mailbox not found")}&flashType=error`;
+      return "";
+    },
+    { params: t.Object({ id: t.String() }) },
   )
 
   /* ─── Templates ─── */
