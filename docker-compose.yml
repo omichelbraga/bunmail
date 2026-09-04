@@ -78,10 +78,12 @@ services:
     # terminated here and relayed in cleartext on the private network with
     # the PROXY protocol, keeping the real client IP for BunMail's checks.
     build: ./smtp-tls
+    # Same port inside and outside on purpose: host firewalls that filter
+    # the DOCKER-USER chain see the post-DNAT (container) port.
     ports:
-      - "${SMTP_PORT:-25}:2525"
+      - "${SMTP_PORT:-25}:${SMTP_PORT:-25}"
     environment:
-      LISTEN_PORT: "2525"
+      LISTEN_PORT: ${SMTP_PORT:-25}
       BACKEND_HOST: app
       BACKEND_PORT: ${SMTP_PORT:-25}
       CERT_FILE: /certs/fullchain.pem

@@ -320,6 +320,10 @@ Ports published by containers are DNAT-ed before `ufw`'s `INPUT` chain, so
 -A DOCKER-USER -i eth0 -p tcp -m multiport --dports 25,465,993,143 -j RETURN
 ```
 
+`DOCKER-USER` is evaluated after Docker's DNAT, so the port it sees is the
+*container* port. Keep host and container ports identical for published mail
+ports (docker-compose does).
+
 ### fail2ban for IMAP / SMTP AUTH
 
 BunMail and Dovecot already throttle failed logins per IP in-process; fail2ban
