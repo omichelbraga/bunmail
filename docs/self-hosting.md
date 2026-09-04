@@ -452,6 +452,20 @@ hostnamectl set-hostname mail.yourdomain.com
 
 This ensures the SMTP EHLO/HELO greeting matches the PTR, which is verified by receiving servers.
 
+> **Docker gotcha.** Ubuntu maps the machine's own hostname to `127.0.1.1` in
+> `/etc/hosts`, and Docker's embedded DNS hands that answer to containers. If
+> the hostname is your mail hostname, BunMail's queue will then try to deliver
+> mail for your own domain (MX → `mail.yourdomain.com`) to `127.0.1.1` inside
+> the container and fail with "Greeting never received". Map the name to the
+> public IP instead:
+>
+> ```
+> 45.80.153.112 mail.yourdomain.com mail
+> ```
+>
+> (Nodemailer caches DNS answers for 5 minutes, so give it a moment or
+> restart the app after the change.)
+
 ### 5. IP Reputation
 
 New IPs have no reputation, which is treated as suspicious. Build it gradually:
