@@ -141,13 +141,40 @@ export interface PreparedRawMessage {
  * - **Ensures a `Message-ID`.** Clients set one; if it is missing, the
  *   provided fallback is inserted so retries, bounces and the dashboard
  *   have a stable identifier.
+ * - **Ensures a `Date`.** Required by RFC 5322 and a spam signal when
+ *   absent; receivers otherwise stamp their own arrival time.
  *
  * Header folding (continuation lines starting with whitespace) is
  * respected when removing `Bcc:`. Only the header block is touched.
  */
+/** RFC 5322 `Date:` value — always UTC with a numeric zone. */
+export function formatRfc5322Date(date: Date = new Date()): string {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return (
+    `${days[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${months[date.getUTCMonth()]} ` +
+    `${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`
+  );
+}
+
 export function prepareRawForRelay(
   raw: string,
   fallbackMessageId: string,
+  now: Date = new Date(),
 ): PreparedRawMessage {
   const separator = raw.indexOf("\r\n\r\n");
   const headerBlock = separator === -1 ? raw : raw.slice(0, separator);
@@ -157,6 +184,7 @@ export function prepareRawForRelay(
   const kept: string[] = [];
   let dropping = false;
   let messageId: string | undefined;
+  let hasDate = false;
   for (const line of lines) {
     const isContinuation = /^[ \t]/.test(line);
     if (isContinuation) {
@@ -167,6 +195,7 @@ export function prepareRawForRelay(
     if (dropping) continue;
     const m = /^message-id:\s*(.+)$/i.exec(line);
     if (m && m[1]) messageId = m[1].trim();
+    if (/^date:/i.test(line)) hasDate = true;
     kept.push(line);
   }
 
@@ -174,6 +203,7 @@ export function prepareRawForRelay(
     messageId = fallbackMessageId;
     kept.push(`Message-ID: ${messageId}`);
   }
+  if (!hasDate) kept.push(`Date: ${formatRfc5322Date(now)}`);
 
   return { raw: kept.join("\r\n") + (body || "\r\n\r\n"), messageId };
 }
