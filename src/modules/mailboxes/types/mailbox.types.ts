@@ -33,6 +33,6 @@ export interface UpdateMailboxInput {
  */
 export interface MailboxClientSettings {
   imap: { host: string; port: number; security: "SSL/TLS" | "STARTTLS" };
-  smtp: { host: string; port: number; security: "STARTTLS" | "None" };
+  smtp: { host: string; port: number; security: "SSL/TLS" | "STARTTLS" | "None" };
   username: string;
 }

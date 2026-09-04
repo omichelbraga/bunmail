@@ -203,6 +203,15 @@ export const config = {
     port: parseInt(optionalEnv("SMTP_SUBMISSION_PORT", "587"), 10),
 
     /**
+     * Implicit-TLS submission port (SMTPS, RFC 8314 §3.3; default 465).
+     * Only opened when TLS material is configured. This is the port mail
+     * clients should use: the STARTTLS upgrade on 587 relies on
+     * `new tls.TLSSocket(socket)`, which Bun does not implement, so the
+     * handshake never completes there. Set to 0 to disable.
+     */
+    securePort: parseInt(optionalEnv("SMTP_SUBMISSION_TLS_PORT", "465"), 10),
+
+    /**
      * Per-API-key daily send quota (#123). Counts messages accepted via the
      * submission server per key per UTC day; once a key reaches it, further
      * submissions are rejected with SMTP 452 until the next UTC day. `0`

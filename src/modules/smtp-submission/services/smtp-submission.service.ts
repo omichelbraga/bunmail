@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { createServer as createTlsServer, type Server as TlsServer } from "tls";
 import { SMTPServer } from "smtp-server";
 import type {
   SMTPServerAuthentication,
@@ -52,8 +53,26 @@ const MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
  */
 const MAX_RECIPIENTS_PER_TRANSACTION = 50;
 
-/** The running server instance, or null when stopped. */
+/** The running server instance (STARTTLS-capable, plaintext port), or null when stopped. */
 let server: SMTPServer | null = null;
+
+/**
+ * The implicit-TLS (SMTPS, port 465) instance, or null when TLS isn't
+ * configured. Shares every handler with `server`; only the transport
+ * differs. Mail clients should use this one — see `config.smtpSubmission.securePort`.
+ */
+let secureServer: SMTPServer | null = null;
+
+/**
+ * Our own TLS listener for `secureServer`. `smtp-server` does its TLS by
+ * wrapping each accepted socket in `new tls.TLSSocket(socket)` — for both
+ * implicit TLS and the STARTTLS upgrade. Bun does not implement that
+ * wrapping (the handshake never completes), while `tls.createServer`
+ * works. So we terminate TLS here and hand the already-encrypted sockets
+ * to an SMTPServer created with `secured: true`, which tells `smtp-server`
+ * the socket is TLS-terminated upstream.
+ */
+let tlsListener: TlsServer | null = null;
 
 /** Interval handle for the periodic rate-limit map cleanup. */
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -196,8 +215,9 @@ export function start(portOverride?: number): void {
 
   /**
    * Load TLS material if both a cert and key path are configured. When
-   * present, smtp-server advertises STARTTLS backed by this cert. A bad
-   * path fails loudly at start rather than silently downgrading security.
+   * present, an implicit-TLS listener (SMTPS) is opened on `securePort`
+   * backed by this cert. A bad path fails loudly at start rather than
+   * silently downgrading security.
    */
   let tlsOptions: { key: Buffer; cert: Buffer } | undefined;
   if (tls.certPath && tls.keyPath) {
@@ -236,9 +256,20 @@ export function start(portOverride?: number): void {
     );
   }
 
-  server = new SMTPServer({
-    ...tlsOptions,
-    secure: false,
+  const serverOptions: ConstructorParameters<typeof SMTPServer>[0] = {
+    /**
+     * Hostname announced in the 220 greeting / EHLO response. Defaults to
+     * the OS hostname, which inside Docker is the container id — receiving
+     * and sending MTAs compare this against PTR/forward DNS, so it must be
+     * the public mail hostname.
+     */
+    name: config.mail.hostname,
+    /**
+     * STARTTLS is never offered: the socket upgrade `smtp-server` performs
+     * for it is not implemented by Bun and would hang the client mid-
+     * handshake. TLS is provided by the implicit-TLS listener below.
+     */
+    hideSTARTTLS: true,
     /** AUTH is mandatory — this is the open-relay guard for submission. */
     authOptional: false,
     /** Only password-based mechanisms; the password carries the API key. */
@@ -531,12 +562,16 @@ export function start(portOverride?: number): void {
         }
       });
     },
-  });
+  };
+
+  server = new SMTPServer({ ...serverOptions, secure: false });
 
   server.listen(port, () => {
     logger.info("SMTP submission server started", {
       port,
-      tls: tlsOptions ? "STARTTLS available" : "plaintext (allowInsecureAuth)",
+      auth: allowInsecureAuth
+        ? "plaintext (allowInsecureAuth)"
+        : "disabled on this port — use the TLS port",
     });
   });
 
@@ -545,9 +580,36 @@ export function start(portOverride?: number): void {
   });
 
   /**
+   * Implicit-TLS listener (SMTPS, RFC 8314). Same handlers as above; TLS
+   * from the first byte, terminated by our own `tls.Server` (see the note
+   * on `tlsListener`). This is the port advertised to mailbox users.
+   */
+  const { securePort } = config.smtpSubmission;
+  if (tlsOptions && securePort > 0) {
+    const smtps = new SMTPServer({ ...serverOptions, secure: true, secured: true });
+    smtps.on("error", (err: Error) => {
+      logger.error("SMTP submission TLS server error", { error: err.message });
+    });
+    const listener = createTlsServer({ ...tlsOptions, minVersion: "TLSv1.2" }, (socket) =>
+      smtps.connect(socket, {}),
+    );
+    listener.on("tlsClientError", (err: Error) => {
+      logger.debug("SMTP submission TLS handshake failed", { error: err.message });
+    });
+    listener.on("error", (err: Error) => {
+      logger.error("SMTP submission TLS listener error", { error: err.message });
+    });
+    listener.listen(securePort, () => {
+      logger.info("SMTP submission server started (implicit TLS)", { port: securePort });
+    });
+    secureServer = smtps;
+    tlsListener = listener;
+  }
+
+  /**
    * Certificate renewal watcher. Let's Encrypt certs rotate every ~60
    * days; re-read the PEM files periodically and swap the TLS context in
-   * place (`updateSecureContext`) so STARTTLS keeps presenting a valid
+   * place (`setSecureContext`) so SMTPS keeps presenting a valid
    * chain without restarting the server. Mirrors the Dovecot sidecar's
    * `doveadm reload` on cert change.
    */
@@ -561,8 +623,8 @@ export function start(portOverride?: number): void {
             key: readFileSync(tls.keyPath),
           };
           const fp = tlsFingerprint(fresh);
-          if (fp !== loadedTlsFingerprint && server) {
-            server.updateSecureContext(fresh);
+          if (fp !== loadedTlsFingerprint && tlsListener) {
+            tlsListener.setSecureContext(fresh);
             loadedTlsFingerprint = fp;
             logger.info("SMTP submission TLS certificate reloaded");
           }
@@ -602,6 +664,16 @@ export function stop(): void {
   if (tlsReloadInterval) {
     clearInterval(tlsReloadInterval);
     tlsReloadInterval = null;
+  }
+  if (tlsListener) {
+    tlsListener.close();
+    tlsListener = null;
+  }
+  if (secureServer) {
+    secureServer.close(() => {
+      logger.info("SMTP submission TLS server stopped");
+    });
+    secureServer = null;
   }
   if (server) {
     server.close(() => {

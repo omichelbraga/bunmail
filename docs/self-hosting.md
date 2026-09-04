@@ -285,11 +285,75 @@ certbot --nginx -d mail.yourdomain.com
 |------|----------|-----------|----------------------------|
 | 25   | TCP      | Outbound  | Send emails to MX servers  |
 | 25   | TCP      | Inbound   | Receive inbound emails     |
-| 587  | TCP      | Inbound   | SMTP submission — apps sending *through* BunMail (only if `SMTP_SUBMISSION_ENABLED=true`; restrict to the networks your apps live on) |
+| 465  | TCP      | Inbound   | SMTP submission over TLS (SMTPS) — apps and mailbox users sending *through* BunMail (only if `SMTP_SUBMISSION_ENABLED=true` with a cert) |
+| 993  | TCP      | Inbound   | IMAPS — mailboxes (Dovecot), see [docs/mailboxes.md](mailboxes.md) |
+| 143  | TCP      | Inbound   | IMAP + STARTTLS (optional; 993 is preferred) |
 | 443  | TCP      | Inbound   | HTTPS (reverse proxy)      |
 | 3000 | TCP      | Inbound   | HTTP API (or via proxy)    |
 
 > **SMTP submission (#120).** To let other apps (Infisical, Netbird, Dify, a Nodemailer backend, …) send through BunMail over SMTP, set `SMTP_SUBMISSION_ENABLED=true`, uncomment the submission port line in `docker-compose.yml`, and open port 587 to those apps only. They authenticate with a `bm_live_…` API key as the password. Full setup and integration snippets: [docs/smtp-submission.md](smtp-submission.md).
+
+### Docker-published ports and `DOCKER-USER`
+
+Ports published by containers are DNAT-ed before `ufw`'s `INPUT` chain, so
+`ufw allow` alone is not enough if you also filter the `DOCKER-USER` chain
+(recommended). Allow the mail ports there explicitly, e.g. in
+`/etc/ufw/after.rules`:
+
+```
+-A DOCKER-USER -i eth0 -p tcp -m multiport --dports 25,465,993,143 -j RETURN
+```
+
+### fail2ban for IMAP / SMTP AUTH
+
+BunMail and Dovecot already throttle failed logins per IP in-process; fail2ban
+adds a host-level ban that also covers connection floods. Both containers log
+to Docker's json-file driver, so the filters read
+`/var/lib/docker/containers/*/*-json.log` and the ban action must target the
+`DOCKER-USER` chain (container traffic never hits `INPUT`):
+
+```ini
+# /etc/fail2ban/filter.d/bunmail-dovecot.conf
+[Definition]
+failregex = ^.*(?:imap|pop3|lmtp|managesieve)-login: .*\(auth failed, \d+ attempts(?: in \d+ secs)?\):.* rip=<HOST>,
+            ^.*auth: Info: sql\([^,]*,<HOST>(?:,[^)]*)?\): (?:unknown user|Password mismatch)
+datepattern = "time":"%%Y-%%m-%%dT%%H:%%M:%%S
+
+# /etc/fail2ban/filter.d/bunmail-app.conf
+[Definition]
+failregex = ^.*SMTP submission AUTH failed.*\\"ip\\":\\"<HOST>\\"
+            ^.*SMTP submission AUTH rate limited.*\\"ip\\":\\"<HOST>\\"
+            ^.*SMTP submission connection rate limited.*\\"ip\\":\\"<HOST>\\"
+            ^.*SMTP connection rate limited.*\\"ip\\":\\"<HOST>\\"
+datepattern = "time":"%%Y-%%m-%%dT%%H:%%M:%%S
+
+# /etc/fail2ban/jail.d/bunmail.local
+[bunmail-dovecot]
+enabled = true
+filter = bunmail-dovecot
+backend = polling
+logpath = /var/lib/docker/containers/*/*-json.log
+port = 25,143,465,993
+chain = DOCKER-USER
+banaction = iptables-multiport
+maxretry = 5
+findtime = 10m
+bantime = 1h
+
+[bunmail-app]
+enabled = true
+filter = bunmail-app
+backend = polling
+logpath = /var/lib/docker/containers/*/*-json.log
+port = 25,143,465,993
+chain = DOCKER-USER
+banaction = iptables-multiport
+maxretry = 6
+findtime = 10m
+bantime = 1h
+```
+
+Validate with `fail2ban-regex <a container json log> /etc/fail2ban/filter.d/bunmail-dovecot.conf`.
 
 ## Updating BunMail
 

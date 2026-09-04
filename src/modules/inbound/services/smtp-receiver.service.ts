@@ -144,6 +144,13 @@ export function start(): void {
   const { spamProtection } = config.smtp;
 
   server = new SMTPServer({
+    /**
+     * Hostname announced in the 220 greeting / EHLO response. Defaults to
+     * the OS hostname, which inside Docker is the container id — receiving
+     * and sending MTAs compare this against PTR/forward DNS, so it must be
+     * the public mail hostname.
+     */
+    name: config.mail.hostname,
     secure: false,
     authOptional: true,
     disabledCommands: ["STARTTLS", "AUTH"],

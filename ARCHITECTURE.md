@@ -57,6 +57,7 @@
 | Database         | PostgreSQL                          |
 | ORM              | Drizzle ORM (`drizzle-orm/bun-sql`) |
 | Dashboard        | Elysia JSX (`@elysiajs/html`)       |
+| IMAP mailboxes   | Dovecot 2.3 sidecar (LMTP delivery, SQL auth against `mailboxes`), see docs/mailboxes.md |
 | Deployment       | Docker + Docker Compose             |
 
 ---
@@ -210,6 +211,12 @@ bunmail/
 │   │   │   │   └── bounce-handler.service.ts ← Lookup, escalation, suppress, mark bounced, webhook
 │   │   │   └── types/
 │   │   │       └── bounce.types.ts
+│   │   ├── mailboxes/                    ← IMAP mailboxes (Dovecot-backed): CRUD + LMTP delivery + client settings
+│   │   │   ├── mailboxes.plugin.ts        ← Admin REST: /api/v1/mailboxes
+│   │   │   ├── services/
+│   │   │   │   ├── mailbox.service.ts     ← CRUD, bcrypt ({BLF-CRYPT}) hashing, submission system key
+│   │   │   │   └── lmtp-delivery.service.ts ← Nodemailer LMTP → Dovecot
+│   │   │   ├── dtos/ · models/ · serializations/ · types/ · errors.ts
 │   │   └── dmarc-reports/                ← DMARC `rua` aggregate report ingest (#41)
 │   │       ├── dmarc-reports.plugin.ts   ← Routes: list + get
 │   │       ├── services/

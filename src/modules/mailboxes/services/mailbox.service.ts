@@ -284,19 +284,28 @@ export async function deleteMailbox(id: string): Promise<Mailbox | undefined> {
 export function getMailboxClientSettings(
   mailbox: Pick<Mailbox, "email">,
 ): MailboxClientSettings {
-  const { tls } = config.smtpSubmission;
+  const { tls, securePort } = config.smtpSubmission;
   const smtpHasTls = Boolean(tls.certPath && tls.keyPath);
+  /**
+   * Prefer the implicit-TLS port (465) when TLS is configured — see
+   * `config.smtpSubmission.securePort` for why STARTTLS on 587 isn't
+   * offered to mail clients.
+   */
+  const smtp: MailboxClientSettings["smtp"] =
+    smtpHasTls && securePort > 0
+      ? { host: config.mailboxes.smtpHost, port: securePort, security: "SSL/TLS" }
+      : {
+          host: config.mailboxes.smtpHost,
+          port: config.smtpSubmission.port,
+          security: smtpHasTls ? "STARTTLS" : "None",
+        };
   return {
     imap: {
       host: config.mailboxes.imapHost,
       port: config.mailboxes.imapPort,
       security: "SSL/TLS",
     },
-    smtp: {
-      host: config.mailboxes.smtpHost,
-      port: config.smtpSubmission.port,
-      security: smtpHasTls ? "STARTTLS" : "None",
-    },
+    smtp,
     username: mailbox.email,
   };
 }

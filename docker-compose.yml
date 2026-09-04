@@ -25,9 +25,14 @@ services:
     ports:
       # Inbound SMTP (MX). Requires SMTP_ENABLED=true and SMTP_PORT=25 in .env.
       - "${SMTP_PORT:-25}:${SMTP_PORT:-25}"
-      # SMTP submission (apps + mailbox users sending THROUGH BunMail).
-      # Requires SMTP_SUBMISSION_ENABLED=true. STARTTLS uses the acme cert.
-      - "${SMTP_SUBMISSION_PORT:-587}:${SMTP_SUBMISSION_PORT:-587}"
+      # SMTP submission over implicit TLS (SMTPS, RFC 8314) — apps and
+      # mailbox users sending THROUGH BunMail. Requires
+      # SMTP_SUBMISSION_ENABLED=true; the cert comes from the acme sidecar.
+      - "${SMTP_SUBMISSION_TLS_PORT:-465}:${SMTP_SUBMISSION_TLS_PORT:-465}"
+      # The plaintext submission port (587) is NOT published: it cannot
+      # offer STARTTLS under Bun, so it only makes sense for apps on the
+      # private Docker network with SMTP_SUBMISSION_ALLOW_INSECURE=true.
+      # - "${SMTP_SUBMISSION_PORT:-587}:${SMTP_SUBMISSION_PORT:-587}"
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-bunmail}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-bunmail}
