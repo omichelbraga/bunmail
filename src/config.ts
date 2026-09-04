@@ -147,6 +147,14 @@ export const config = {
    */
   appBaseUrl: optionalEnv("APP_BASE_URL", "").replace(/\/+$/, ""),
 
+  /**
+   * Where `GET /` should send visitors instead of rendering the public
+   * landing page. Empty (default) keeps the landing page. Set to
+   * `/dashboard`, or to a webmail URL, when the public marketing page is
+   * not wanted on a private instance.
+   */
+  landingRedirect: optionalEnv("LANDING_REDIRECT", "").trim(),
+
   mail: {
     /** Hostname used in SMTP HELO command and Message-ID header */
     hostname: optionalEnv("MAIL_HOSTNAME", "localhost"),

@@ -146,8 +146,200 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # ── Webmail (Kurrier, https://github.com/kurrier-org/kurrier) ──
+  # Optional modern webmail for mailbox users. Kurrier is a separate product
+  # bolted on beside BunMail: it logs users in with their mailbox
+  # credentials against Dovecot (IMAP) and BunMail's SMTPS submission port.
+  # Both of its databases live in BunMail's Postgres (see webmail/init.sh).
+  # Service names `worker` and `dav` are fixed: the Kurrier web image has
+  # `http://worker:3001` and `http://dav:80` compiled into its Next.js
+  # rewrites. Everything here is internal; only `kurrier-web` gets a domain.
+  kurrier-init:
+    build: ./webmail
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-bunmail}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-bunmail}
+      KURRIER_DB_PASSWORD: ${KURRIER_DB_PASSWORD:?Set KURRIER_DB_PASSWORD in .env}
+      BAIKAL_DB_PASSWORD: ${BAIKAL_DB_PASSWORD:?Set BAIKAL_DB_PASSWORD in .env}
+      BAIKAL_ENCRYPTION_KEY: ${BAIKAL_ENCRYPTION_KEY:?Set BAIKAL_ENCRYPTION_KEY in .env}
+      CONFIG_DIR: /config
+    volumes:
+      - kurrier_config:/config
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  kurrier-web:
+    image: ghcr.io/kurrier-org/kurrier-web:v4.0.0
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      WEB_PORT: "3000"
+      WEB_URL: ${KURRIER_WEB_URL:?Set KURRIER_WEB_URL in .env}
+      DAV_URL: ${KURRIER_DAV_URL:-${KURRIER_WEB_URL}}
+      WORKER_URL: http://worker:3001
+      DISABLE_DRIVE: "true"
+      DISABLE_SIGNUP: ${KURRIER_DISABLE_SIGNUP:-true}
+      DISABLE_LOCAL_LOGIN: "false"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bunmail}:${POSTGRES_PASSWORD}@db:5432/kurrier
+      DATABASE_RLS_URL: postgresql://kurrier:${KURRIER_DB_PASSWORD}@db:5432/kurrier
+      DAV_DATABASE_URL: postgresql://baikal:${BAIKAL_DB_PASSWORD}@db:5432/baikal
+      JWT_SECRET: ${KURRIER_JWT_SECRET:?Set KURRIER_JWT_SECRET in .env}
+      APP_SECRET_ENCRYPTION_KEY: ${KURRIER_APP_SECRET_ENCRYPTION_KEY:?Set KURRIER_APP_SECRET_ENCRYPTION_KEY in .env}
+      REDIS_HOST: kurrier-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${KURRIER_REDIS_PASSWORD:?Set KURRIER_REDIS_PASSWORD in .env}
+      TYPESENSE_HOST: kurrier-typesense
+      TYPESENSE_PORT: "8108"
+      TYPESENSE_PROTOCOL: http
+      TYPESENSE_API_KEY: ${KURRIER_TYPESENSE_API_KEY:?Set KURRIER_TYPESENSE_API_KEY in .env}
+      SEARCH_REBUILD_ON_BOOT: "false"
+      S3_ENDPOINT: http://kurrier-garage:3900
+      S3_REGION: garage
+      S3_BUCKET: kurrier-store
+      S3_ACCESS_KEY: ${KURRIER_GARAGE_ACCESS_KEY:?Set KURRIER_GARAGE_ACCESS_KEY in .env}
+      S3_SECRET_KEY: ${KURRIER_GARAGE_SECRET_KEY:?Set KURRIER_GARAGE_SECRET_KEY in .env}
+      S3_FORCE_PATH_STYLE: "true"
+      # Preset shown to every user: log in with the mailbox address + password.
+      CUSTOM_EMAIL_PROVIDERS: '[{"id":"bunmail","name":"BunMail","description":"Your mailbox on ${MAIL_HOSTNAME:-localhost}: sign in with your email address and mailbox password.","credentialMode":"shared","smtp":{"host":"${MAILBOX_SMTP_HOST:-localhost}","port":${SMTP_SUBMISSION_TLS_PORT:-465},"secure":true},"imap":{"host":"${MAILBOX_IMAP_HOST:-localhost}","port":${MAILBOX_IMAP_PORT:-993},"secure":true}}]'
+    depends_on:
+      kurrier-init:
+        condition: service_completed_successfully
+      kurrier-redis:
+        condition: service_healthy
+      kurrier-typesense:
+        condition: service_started
+      kurrier-garage:
+        condition: service_started
+      worker:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    # Upstream image + a small packaging fix, see webmail/worker/Dockerfile.
+    build: ./webmail/worker
+    expose:
+      - "3001"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3001"
+      WEB_URL: ${KURRIER_WEB_URL}
+      DAV_URL: ${KURRIER_DAV_URL:-${KURRIER_WEB_URL}}
+      WORKER_URL: http://worker:3001
+      DISABLE_DRIVE: "true"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bunmail}:${POSTGRES_PASSWORD}@db:5432/kurrier
+      DATABASE_RLS_URL: postgresql://kurrier:${KURRIER_DB_PASSWORD}@db:5432/kurrier
+      DAV_DATABASE_URL: postgresql://baikal:${BAIKAL_DB_PASSWORD}@db:5432/baikal
+      JWT_SECRET: ${KURRIER_JWT_SECRET}
+      APP_SECRET_ENCRYPTION_KEY: ${KURRIER_APP_SECRET_ENCRYPTION_KEY}
+      REDIS_HOST: kurrier-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${KURRIER_REDIS_PASSWORD}
+      TYPESENSE_HOST: kurrier-typesense
+      TYPESENSE_PORT: "8108"
+      TYPESENSE_PROTOCOL: http
+      TYPESENSE_API_KEY: ${KURRIER_TYPESENSE_API_KEY}
+      SEARCH_REBUILD_ON_BOOT: "false"
+      S3_ENDPOINT: http://kurrier-garage:3900
+      S3_REGION: garage
+      S3_BUCKET: kurrier-store
+      S3_ACCESS_KEY: ${KURRIER_GARAGE_ACCESS_KEY}
+      S3_SECRET_KEY: ${KURRIER_GARAGE_SECRET_KEY}
+      S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      kurrier-init:
+        condition: service_completed_successfully
+      kurrier-redis:
+        condition: service_healthy
+      kurrier-typesense:
+        condition: service_started
+      kurrier-garage:
+        condition: service_started
+    restart: unless-stopped
+
+  kurrier-redis:
+    image: redis:8.2.2
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--stop-writes-on-bgsave-error",
+        "no",
+        "--requirepass",
+        "${KURRIER_REDIS_PASSWORD}",
+      ]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${KURRIER_REDIS_PASSWORD}", "PING"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - kurrier_redis:/data
+    restart: unless-stopped
+
+  kurrier-typesense:
+    image: typesense/typesense:29.0
+    command:
+      ["--data-dir", "/data", "--api-key=${KURRIER_TYPESENSE_API_KEY}", "--enable-cors"]
+    volumes:
+      - kurrier_typesense:/data
+    restart: unless-stopped
+
+  kurrier-garage:
+    # S3-compatible object store for message bodies / attachments (Kurrier).
+    image: dxflrs/garage:v2.3.0
+    environment:
+      GARAGE_RPC_SECRET: ${KURRIER_GARAGE_RPC_SECRET:?Set KURRIER_GARAGE_RPC_SECRET in .env}
+      GARAGE_DEFAULT_ACCESS_KEY: ${KURRIER_GARAGE_ACCESS_KEY}
+      GARAGE_DEFAULT_SECRET_KEY: ${KURRIER_GARAGE_SECRET_KEY}
+      GARAGE_DEFAULT_BUCKET: kurrier-store
+    command:
+      [
+        "/garage",
+        "-c",
+        "/config/garage/garage.toml",
+        "server",
+        "--single-node",
+        "--default-bucket",
+      ]
+    volumes:
+      - kurrier_config:/config:ro
+      - kurrier_garage_data:/var/lib/garage/data
+      - kurrier_garage_meta:/var/lib/garage/meta
+    depends_on:
+      kurrier-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  dav:
+    # Baikal CalDAV/CardDAV (Kurrier calendars + contacts), reached through
+    # the Kurrier web rewrites (/dav.php, /.well-known/caldav, …).
+    image: ckulka/baikal:nginx
+    volumes:
+      - kurrier_config:/var/www/baikal/config
+      - kurrier_dav_data:/var/www/baikal/Specific
+    depends_on:
+      kurrier-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  # Kurrier webmail state (Redis AOF, search index, object store, DAV data,
+  # rendered config files).
+  kurrier_config:
+  kurrier_redis:
+  kurrier_typesense:
+  kurrier_garage_data:
+  kurrier_garage_meta:
+  kurrier_dav_data:
   # Maildir storage for every mailbox — MUST be persistent.
   maildata:
   # Let's Encrypt cert pair shared by dovecot (IMAPS) and app (STARTTLS).

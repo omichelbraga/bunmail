@@ -20,3 +20,8 @@ services:
   db:
     ports:
       - "5432:5432"
+
+  # Kurrier webmail on http://localhost:3005 for local development.
+  kurrier-web:
+    ports:
+      - "3005:3000"
