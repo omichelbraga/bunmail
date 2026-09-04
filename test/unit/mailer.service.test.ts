@@ -38,8 +38,8 @@ interface CapturedSend {
 const captured: CapturedSend[] = [];
 let mxResult: Array<{ exchange: string; priority: number }> | Error = [];
 let mxResolver:
-  | ((domain: string) => Promise<Array<{ exchange: string; priority: number }>>)
-  | null = null;
+  ((domain: string) => Promise<Array<{ exchange: string; priority: number }>>) | null =
+  null;
 let sendBehaviour: ((transportHost: string) => Error | void | undefined) | null = null;
 
 mock.module("dns/promises", () => ({
