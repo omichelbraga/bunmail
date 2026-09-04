@@ -58,6 +58,7 @@
 | ORM              | Drizzle ORM (`drizzle-orm/bun-sql`) |
 | Dashboard        | Elysia JSX (`@elysiajs/html`)       |
 | IMAP mailboxes   | Dovecot 2.3 sidecar (LMTP delivery, SQL auth against `mailboxes`), see docs/mailboxes.md |
+| Inbound STARTTLS | `smtp-tls` front on :25 (Python asyncio) — Bun can't upgrade sockets to TLS; relays with PROXY protocol, see docs/self-hosting.md |
 | Deployment       | Docker + Docker Compose             |
 
 ---

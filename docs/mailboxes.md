@@ -14,7 +14,10 @@ already runs.
 ## Architecture
 
 ```
-Internet ──SMTP:25──▶ BunMail inbound receiver (unchanged: DNSBL, rate limit,
+Internet ──SMTP:25──▶ smtp-tls front (STARTTLS termination, PROXY protocol)
+                      │
+                      ▼
+                      BunMail inbound receiver (unchanged: DNSBL, rate limit,
                       │                          registered-domain check)
                       ├─▶ recipient is an enabled mailbox?
                       │     └─▶ LMTP :24 (private network) ──▶ Dovecot ──▶ Maildir

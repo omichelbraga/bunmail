@@ -169,6 +169,16 @@ export const config = {
     /** Set to "true" to enable the inbound SMTP server */
     enabled: optionalEnv("SMTP_ENABLED", "false") === "true",
 
+    /**
+     * Expect a HAProxy PROXY protocol v1 header on every inbound connection
+     * (docs/self-hosting.md#starttls-on-port-25). Set when the receiver sits
+     * behind the `smtp-tls` STARTTLS front so the client IP seen by DNSBL,
+     * rate limiting and logs is the real sender, not the proxy. When true,
+     * direct connections WITHOUT the header are rejected — only publish the
+     * proxy's port. Default false.
+     */
+    proxyProtocol: optionalEnv("SMTP_PROXY_PROTOCOL", "false") === "true",
+
     /** Spam protection layers — all enabled by default when SMTP is on */
     spamProtection: {
       /** Check connecting IPs against a DNSBL (e.g. Spamhaus ZEN) */

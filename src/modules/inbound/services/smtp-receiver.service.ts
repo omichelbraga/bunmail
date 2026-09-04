@@ -153,7 +153,15 @@ export function start(): void {
     name: config.mail.hostname,
     secure: false,
     authOptional: true,
+    /**
+     * STARTTLS is disabled here because the socket upgrade `smtp-server`
+     * performs is not implemented by Bun. Opportunistic TLS on port 25 is
+     * provided by the `smtp-tls` front (docker-compose), which terminates
+     * STARTTLS and relays to this server with the PROXY protocol.
+     */
     disabledCommands: ["STARTTLS", "AUTH"],
+    /** Read the real client IP from the PROXY protocol header (see config). */
+    useProxy: config.smtp.proxyProtocol,
 
     /**
      * Maximum message size (bytes). The SMTP server advertises this via

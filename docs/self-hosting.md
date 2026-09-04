@@ -293,6 +293,22 @@ certbot --nginx -d mail.yourdomain.com
 
 > **SMTP submission (#120).** To let other apps (Infisical, Netbird, Dify, a Nodemailer backend, …) send through BunMail over SMTP, set `SMTP_SUBMISSION_ENABLED=true`, uncomment the submission port line in `docker-compose.yml`, and open port 587 to those apps only. They authenticate with a `bm_live_…` API key as the password. Full setup and integration snippets: [docs/smtp-submission.md](smtp-submission.md).
 
+### STARTTLS on port 25
+
+BunMail's receiver runs on Bun, which cannot upgrade an accepted socket to
+TLS (`smtp-server` uses `new tls.TLSSocket(socket)` for STARTTLS). Without
+help, other MTAs would deliver to you in cleartext. `docker-compose.yml`
+therefore publishes port 25 through the small `smtp-tls` service
+(`smtp-tls/proxy.py`, Python asyncio, no dependencies): it advertises and
+terminates STARTTLS with the Let's Encrypt cert from the `acme` sidecar and
+relays the session to BunMail on the private network, prefixed with a HAProxy
+PROXY protocol header so BunMail (`SMTP_PROXY_PROTOCOL=true`) still sees the
+real client IP for DNSBL, rate limiting, logs and fail2ban. Verify with:
+
+```bash
+openssl s_client -connect mail.yourdomain.com:25 -starttls smtp -crlf </dev/null
+```
+
 ### Docker-published ports and `DOCKER-USER`
 
 Ports published by containers are DNAT-ed before `ufw`'s `INPUT` chain, so

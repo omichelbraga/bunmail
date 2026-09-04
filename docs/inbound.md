@@ -64,6 +64,7 @@ Table: `inbound_emails`
 |----------------|---------|--------------------------------------------|
 | `SMTP_ENABLED` | `false` | Set to `true` to start the SMTP server     |
 | `SMTP_PORT`    | `2525`  | Port for the inbound SMTP server           |
+| `SMTP_PROXY_PROTOCOL` | `false` | Expect a PROXY protocol header (set by docker-compose; the `smtp-tls` front provides STARTTLS, see [self-hosting](self-hosting.md#starttls-on-port-25)) |
 
 In production, set `SMTP_PORT=25` and configure your domain's MX record to point to your server.
 

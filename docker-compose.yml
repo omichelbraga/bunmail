@@ -23,8 +23,9 @@ services:
     expose:
       - "${PORT:-3000}"
     ports:
-      # Inbound SMTP (MX). Requires SMTP_ENABLED=true and SMTP_PORT=25 in .env.
-      - "${SMTP_PORT:-25}:${SMTP_PORT:-25}"
+      # Inbound SMTP (MX) is published by the `smtp-tls` service below, which
+      # terminates STARTTLS and relays here with the PROXY protocol. The
+      # receiver itself is only reachable on the private network.
       # SMTP submission over implicit TLS (SMTPS, RFC 8314) — apps and
       # mailbox users sending THROUGH BunMail. Requires
       # SMTP_SUBMISSION_ENABLED=true; the cert comes from the acme sidecar.
@@ -37,6 +38,8 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-bunmail}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-bunmail}
       BUNMAIL_ENV: production
+      # Inbound connections arrive via the smtp-tls front with a PROXY header
+      SMTP_PROXY_PROTOCOL: "true"
       # Dovecot LMTP on the private network (docs/mailboxes.md)
       MAILBOX_LMTP_HOST: dovecot
       MAILBOX_LMTP_PORT: "24"
@@ -67,6 +70,30 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  smtp-tls:
+    # STARTTLS front for port 25 (see smtp-tls/proxy.py). Bun cannot upgrade a
+    # socket to TLS server-side, so opportunistic TLS for incoming mail is
+    # terminated here and relayed in cleartext on the private network with
+    # the PROXY protocol, keeping the real client IP for BunMail's checks.
+    build: ./smtp-tls
+    ports:
+      - "${SMTP_PORT:-25}:2525"
+    environment:
+      LISTEN_PORT: "2525"
+      BACKEND_HOST: app
+      BACKEND_PORT: ${SMTP_PORT:-25}
+      CERT_FILE: /certs/fullchain.pem
+      KEY_FILE: /certs/privkey.pem
+      PROXY_PROTOCOL: "true"
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      acme:
+        condition: service_healthy
     restart: unless-stopped
 
   dovecot:

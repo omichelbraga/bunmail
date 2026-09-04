@@ -262,6 +262,11 @@ queueService.start();
  */
 if (config.smtp.enabled) {
   smtpReceiver.start();
+  if (config.smtp.proxyProtocol) {
+    logger.info(
+      "Inbound SMTP expects PROXY protocol headers (SMTP_PROXY_PROTOCOL=true) — only the smtp-tls front should connect to it",
+    );
+  }
 } else {
   logger.info(
     "Inbound SMTP receiver disabled — set SMTP_ENABLED=true (and uncomment the SMTP port line in docker-compose.yml) to enable",
